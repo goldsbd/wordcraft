@@ -112,7 +112,11 @@ fn failed_command_restores_history_changed_by_nested_commands() {
             run(s, "edit.redo", json!({}));
         }
         loop {
-            out.push((s.undo_labels(), s.doc.clone()));
+            // Comments are stamped with the time to the second, and the two sessions compared
+            // are built a moment apart, so leave the stamp out of the comparison.
+            let mut doc = s.doc.clone();
+            doc.comments.values_mut().for_each(|c| c.date.clear());
+            out.push((s.undo_labels(), doc));
             if !s.can_undo() {
                 return out;
             }

@@ -60,7 +60,8 @@
 	Automatic Table 1 (3 levels)	自动目录 1（3 级）
 	Automatic Table 2 (2 levels)	自动目录 2（2 级）
 	AutoSave	自动保存
-	AutoSave documents that have been saved	自动保存已保存过的文档
+	AutoSave documents you have saved in WordCraft	自动保存在 WordCraft 中保存过的文档
+	AutoSave failed: {error}. Save the document to turn AutoSave back on.	自动保存失败：{error}。重新保存文档后将恢复自动保存。
 	AutoSave saves every change to the file (needs a saved document)	自动保存会把每次更改写入文件（文档需已保存）
 	AutoText	自动图文集
 	Backspace	退格

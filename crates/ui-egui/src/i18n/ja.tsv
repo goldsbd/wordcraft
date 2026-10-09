@@ -49,7 +49,8 @@
 	Automatic Table 1 (3 levels)	自動目次 1（3 レベル）
 	Automatic Table 2 (2 levels)	自動目次 2（2 レベル）
 	AutoSave	自動保存
-	AutoSave documents that have been saved	保存済みの文書を自動保存する
+	AutoSave documents you have saved in WordCraft	WordCraft で保存した文書を自動保存する
+	AutoSave failed: {error}. Save the document to turn AutoSave back on.	自動保存できませんでした: {error}。文書を保存し直すと、自動保存が再開します。
 	AutoSave saves every change to the file (needs a saved document)	自動保存は変更のたびにファイルへ保存します（保存済みの文書が必要です）
 	AutoText	定型句
 	Backspace	Backspace

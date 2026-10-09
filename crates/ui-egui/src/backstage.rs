@@ -269,7 +269,7 @@ fn options_page(app: &mut WordApp, ui: &mut Ui) {
     if ui.checkbox(&mut dark, tl!("Dark mode")).changed() {
         let _ = app.run("ui.dark", json!({"value": dark}));
     }
-    ui.checkbox(&mut app.autosave, tl!("AutoSave documents that have been saved"));
+    ui.checkbox(&mut app.autosave, tl!("AutoSave documents you have saved in WordCraft"));
     ui.checkbox(&mut app.ui.show_discord, tl!("Show the community button in the title bar"));
     ui.add_space(10.0);
     ui.label(egui::RichText::new(tl!("Display")).font(semibold(15.0)));

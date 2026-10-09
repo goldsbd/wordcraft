@@ -117,6 +117,10 @@ pub struct WordApp {
     pub autosave: bool,
     pub word_count: (u64, usize),
     last_autosave: f64,
+    /// The file the document was last explicitly saved to in this session; AutoSave writes only
+    /// there. A file that was merely opened isn't rewritten until the user saves it: saving drops
+    /// whatever WordCraft can't represent (content controls, charts, macros…).
+    autosave_path: Option<std::path::PathBuf>,
 }
 
 /// The answer to "Do you want to save changes?" (`ui.saveChanges`).
@@ -163,6 +167,7 @@ impl WordApp {
             autosave: true,
             word_count: (0, 0),
             last_autosave: 0.0,
+            autosave_path: None,
         }
     }
 
@@ -223,6 +228,19 @@ impl WordApp {
             return Ok(json!({"downloaded": name, "bytes": bytes.len()}));
         }
         let r = self.session.run(id, &params).map_err(|e| e.to_string());
+        if let Ok(v) = &r {
+            match id {
+                // An explicit save to the document's own file lets AutoSave keep writing there.
+                "file.save" | "file.saveAs"
+                    if v.get("saved").and_then(Value::as_bool) == Some(true)
+                        && v.get("path").and_then(Value::as_str).map(std::path::Path::new) == self.session.path.as_deref() =>
+                {
+                    self.autosave_path = self.session.path.clone();
+                }
+                "file.new" | "file.open" => self.autosave_path = None,
+                _ => {}
+            }
+        }
         self.after_command(id);
         if let Err(e) = &r {
             self.status(e.clone());
@@ -451,21 +469,8 @@ impl WordApp {
         }
         self.drain_control(ctx);
         self.drain_inbox();
-        // AutoSave: write a saved document a couple of seconds after the last change.
-        let now = now_ms();
-        if self.autosave
-            && self.session.dirty
-            && self.session.path.is_some()
-            && now - self.last_autosave > 2500.0
-            && now - self.canvas.caret_visible_since > 1500.0
-        {
-            self.last_autosave = now;
-            let ext = self.session.path.as_ref().and_then(|p| p.extension()).map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
-            if ext == "docx" || ext == "json" || ext == "odt" || ext == "rtf" {
-                let _ = self.session.run("file.save", &json!({}));
-            }
-        }
-        if self.autosave && self.session.dirty && self.session.path.is_some() {
+        self.autosave_tick(now_ms());
+        if self.autosaves() && self.session.dirty {
             ctx.request_repaint_after(std::time::Duration::from_millis(1000));
         }
         self.collect_screenshots(ctx);
@@ -480,6 +485,32 @@ impl WordApp {
                 let lp = path.to_ascii_lowercase();
                 let img = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"].iter().any(|e| lp.ends_with(e));
                 let _ = if img { self.run("insert.picture", json!({"path": path})) } else { self.run("file.open", json!({"path": path})) };
+            }
+        }
+    }
+
+    /// Whether the document's file is one the user saved to in this session.
+    pub fn saved_here(&self) -> bool {
+        self.session.path.is_some() && self.session.path == self.autosave_path
+    }
+
+    /// Whether AutoSave covers the document (only a file the user saved to in this session).
+    pub fn autosaves(&self) -> bool {
+        self.autosave && self.saved_here()
+    }
+
+    /// AutoSave: write a saved document a couple of seconds after the last change. A failure is
+    /// shown in the status bar and turns AutoSave off for the file until the user saves it again.
+    fn autosave_tick(&mut self, now: f64) {
+        if self.autosaves() && self.session.dirty && now - self.last_autosave > 2500.0 && now - self.canvas.caret_visible_since > 1500.0 {
+            self.last_autosave = now;
+            let ext = self.session.path.as_ref().and_then(|p| p.extension()).map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+            if matches!(ext.as_str(), "docx" | "json" | "odt" | "rtf")
+                && let Err(e) = self.session.run("file.save", &json!({}))
+            {
+                log::warn!("AutoSave failed: {e}");
+                self.autosave_path = None;
+                self.status(i18n::fmt(tl!("AutoSave failed: {error}. Save the document to turn AutoSave back on."), &[("error", &e.to_string())]));
             }
         }
     }
@@ -866,6 +897,55 @@ mod tests {
         control::handle(&mut a, &ctx, &req);
         assert_eq!(prompt(&a), None);
         assert!(!body_text(&a).contains(UNSAVED));
+    }
+
+    /// Surfaces finding 3: AutoSave rewrote any opened .docx ~2.5 s after the first keystroke,
+    /// deleting whatever the reader doesn't model (content controls, charts, macros…).
+    #[test]
+    fn opened_files_are_not_autosaved_until_the_user_saves() {
+        let dir = scratch("autosave");
+        let path = docx_on_disk(&dir, "Original");
+        let before = std::fs::read(&path).unwrap();
+        let mut a = app();
+        a.run("file.open", json!({"path": path.to_string_lossy()})).unwrap();
+        a.run("text.insert", json!({"text": "Typed "})).unwrap();
+        a.autosave_tick(now_ms() + 10_000.0);
+        assert!(std::fs::read(&path).unwrap() == before, "an opened file is never rewritten behind the user's back");
+        assert!(a.session.dirty);
+
+        // After an explicit save, later changes are saved automatically.
+        a.run("file.save", json!({})).unwrap();
+        a.run("text.insert", json!({"text": "More "})).unwrap();
+        assert!(a.session.dirty);
+        a.autosave_tick(now_ms() + 10_000.0);
+        assert!(!a.session.dirty);
+        let saved = wordcraft_engine::io::open_path(&path).unwrap();
+        assert!(saved.plain_text(wordcraft_doc::StoryRef::Body).contains("Typed More Original"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A failing AutoSave used to be silent (`let _ =`) and retried every 2.5 s.
+    #[test]
+    fn autosave_failures_are_reported_once() {
+        let dir = scratch("autosave-fail");
+        let path = dir.join("gone").join("novel.docx");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut a = typed();
+        a.run("file.save", json!({"path": path.to_string_lossy()})).unwrap();
+        // The folder disappears (unplugged drive, network share gone).
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        a.run("text.insert", json!({"text": "More "})).unwrap();
+        a.status_msg = None;
+        a.autosave_tick(now_ms() + 10_000.0);
+        let msg = a.status_msg.as_ref().map(|(m, _)| m.clone()).unwrap_or_default();
+        assert!(msg.contains("AutoSave"), "the failure shows in the status bar: {msg:?}");
+        assert!(a.session.dirty);
+
+        // Not retried until the user saves again.
+        a.status_msg = None;
+        a.autosave_tick(now_ms() + 20_000.0);
+        assert!(a.status_msg.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

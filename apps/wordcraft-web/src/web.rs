@@ -44,9 +44,9 @@ pub fn start() {
                     }
                     let inbox: Inbox = Inbox::default();
                     let doc = if query().contains("sample") { wordcraft_engine::sample::sample_document() } else { wordcraft_doc::Document::new() };
-                    let mut app = WordApp::new(Session::new(doc), services(inbox.clone(), cc.egui_ctx.clone()));
+                    let mut app = WordApp::new(Session::new(doc), services(inbox.clone(), cc.egui_ctx.clone(), dirty));
                     app.autosave = false;
-                    Ok(Box::new(WebShell { app, inbox, dirty }))
+                    Ok(Box::new(WebShell { app, inbox }))
                 }),
             )
             .await;
@@ -68,8 +68,6 @@ fn query() -> String {
 struct WebShell {
     app: WordApp,
     inbox: Inbox,
-    /// Whether the document has unsaved changes, for the `beforeunload` guard.
-    dirty: Rc<Cell<bool>>,
 }
 
 impl eframe::App for WebShell {
@@ -90,7 +88,6 @@ impl eframe::App for WebShell {
             });
         }
         self.app.logic(ctx);
-        self.dirty.set(self.app.session.dirty);
     }
 
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
@@ -102,7 +99,8 @@ impl eframe::App for WebShell {
     }
 }
 
-fn services(inbox: Inbox, ctx: egui::Context) -> Services {
+/// `dirty` is the flag the `beforeunload` guard reads ([`guard_unload`]).
+fn services(inbox: Inbox, ctx: egui::Context, dirty: Rc<Cell<bool>>) -> Services {
     let open_inbox = inbox.clone();
     Services {
         open_async: Some(Box::new(move |purpose: &str| {
@@ -130,6 +128,7 @@ fn services(inbox: Inbox, ctx: egui::Context) -> Services {
             }
         })),
         inbox: Some(inbox),
+        on_dirty: Some(Box::new(move |d| dirty.set(d))),
         ..Default::default()
     }
 }

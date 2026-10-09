@@ -48,6 +48,9 @@ pub struct Services {
     pub inbox: Option<Inbox>,
     /// Web: hand bytes to the browser as a download.
     pub download: Option<Box<dyn Fn(&str, &[u8])>>,
+    /// Web: told whether the document has unsaved changes after each pass, for the browser's
+    /// leave-page guard (`beforeunload` runs between frames and can't ask the app).
+    pub on_dirty: Option<Box<dyn Fn(bool)>>,
 }
 
 /// Files delivered asynchronously.
@@ -494,6 +497,14 @@ impl WordApp {
                 let _ = if img { self.run("insert.picture", json!({"path": path})) } else { self.run("file.open", json!({"path": path})) };
             }
         }
+        self.report_dirty();
+    }
+
+    /// Tell the host whether the document has unsaved changes ([`Services::on_dirty`]).
+    fn report_dirty(&self) {
+        if let Some(f) = &self.services.on_dirty {
+            f(self.session.dirty);
+        }
     }
 
     /// Whether the document's file is one the user saved to in this session.
@@ -569,6 +580,8 @@ impl WordApp {
         let title = format!("{}{} - WordCraft", self.title_stem(), if self.session.dirty { " •" } else { "" });
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
         self.frame_ms = now_ms() - t0;
+        // Typing and formatting land here, after `logic` has reported.
+        self.report_dirty();
     }
 
     /// Files that arrived asynchronously (web picker, drops): documents open, pictures insert.
@@ -925,6 +938,33 @@ mod tests {
         assert_eq!(a.session.path.as_deref(), Some(path.as_path()));
         assert!(a.session.dirty);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The web shell's leave-page guard learned about unsaved changes only after `logic`, but
+    /// typing lands in `ui`, so a tab closed right after the first keystroke left without asking.
+    #[test]
+    fn the_host_hears_about_edits_made_while_drawing() {
+        let reported = std::rc::Rc::new(std::cell::Cell::new(None));
+        let mut a = app();
+        let seen = reported.clone();
+        a.services.on_dirty = Some(Box::new(move |d| seen.set(Some(d))));
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui_state(
+            |ui, app: &mut WordApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            a,
+        );
+        for _ in 0..6 {
+            h.step();
+        }
+        assert!(h.state().canvas.focused, "the page has keyboard focus");
+        assert_eq!(reported.get(), Some(false));
+        h.event(egui::Event::Text("x".into()));
+        h.step();
+        assert!(h.state().session.dirty, "the keystroke reached the document");
+        assert_eq!(reported.get(), Some(true), "the host was told before the frame ended");
     }
 
     /// Save writes the document first, then carries on with what the user asked for.

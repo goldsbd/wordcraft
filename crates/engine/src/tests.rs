@@ -68,6 +68,39 @@ fn joined_commands_are_one_undo_step() {
 }
 
 #[test]
+fn failed_command_keeps_undo_and_redo() {
+    // A command that fails after its undo checkpoint leaves the history exactly as it was:
+    // the redo stack survives, and no empty undo step is added.
+    for (id, params) in [("text.insert", json!({})), ("para.align", json!({"value": "bogus"}))] {
+        let mut s = s();
+        run(&mut s, "text.insert", json!({"text": "Hello"}));
+        run(&mut s, "edit.undo", json!({}));
+        assert!(s.can_redo());
+        assert!(s.run(id, &params).is_err(), "{id} should fail");
+        assert!(s.can_redo(), "{id}: redo lost");
+        assert!(!s.can_undo(), "{id}: failed command left an undo step");
+        run(&mut s, "edit.redo", json!({}));
+        assert_eq!(text(&s), "Hello", "{id}");
+    }
+
+    // At the undo limit, the oldest step is not evicted by a command that fails.
+    let mut s = s();
+    let steps = 600;
+    for i in 1..=steps {
+        run(&mut s, "para.indents", json!({"left": i as f32}));
+    }
+    let kept = s.undo_labels().len();
+    assert!(kept < steps, "the history should be at its limit");
+    assert!(s.run("para.align", &json!({"value": "bogus"})).is_err());
+    assert_eq!(s.undo_labels().len(), kept);
+    while s.can_undo() {
+        run(&mut s, "edit.undo", json!({}));
+    }
+    let indent = s.doc.para_at(&s.sel.focus).and_then(|p| p.props.indent_left);
+    assert_eq!(indent, Some((steps - kept) as f32));
+}
+
+#[test]
 fn backspace_and_delete() {
     let mut s = s();
     run(&mut s, "text.insert", json!({"text": "abc"}));

@@ -239,15 +239,18 @@ impl Session {
 
     /// Snapshot for undo before a change.
     pub fn checkpoint(&mut self, label: &str) {
+        self.push_undo(label);
+    }
+    /// `checkpoint`, handing back what it dropped (the redo stack, and the oldest step when
+    /// the history is full) so a command that then fails can put them back.
+    fn push_undo(&mut self, label: &str) -> Option<(Vec<Undo>, Option<Undo>)> {
         if label == "Typing" && self.typing_open {
-            return;
+            return None;
         }
         self.typing_open = label == "Typing";
         self.history.push(Undo { label: label.to_string(), doc: self.doc.clone(), sel: self.sel.clone() });
-        if self.history.len() > MAX_UNDO {
-            self.history.remove(0);
-        }
-        self.redo.clear();
+        let evicted = if self.history.len() > MAX_UNDO { Some(self.history.remove(0)) } else { None };
+        Some((std::mem::take(&mut self.redo), evicted))
     }
     /// Make the next mutating command part of the previous undo step instead of a new one, so a
     /// drag that runs a command every frame is a single Undo. Call it on every frame of the drag
@@ -351,10 +354,11 @@ impl Session {
         if spec.mutates && spec.id != "text.insert" {
             self.typing_open = false;
         }
+        let mut dropped = None;
         if spec.mutates {
             let label = if spec.id == "text.insert" { "Typing" } else { spec.label };
             if !join || self.history.is_empty() {
-                self.checkpoint(label);
+                dropped = self.push_undo(label);
             }
         } else if !spec.id.starts_with("caret.") && !spec.id.starts_with("view.") {
             // Non-mutating commands other than caret movement keep the typing group.
@@ -382,8 +386,20 @@ impl Session {
                 if let Some((d, s, h, t)) = before_doc {
                     self.doc = d;
                     self.sel = s;
-                    self.history.truncate(h);
                     self.typing_open = t;
+                    // Undo the checkpoint too: drop the step it added and restore what it dropped.
+                    match dropped {
+                        Some((redo, evicted)) => {
+                            self.redo = redo;
+                            if let Some(oldest) = evicted {
+                                self.history.truncate(h.saturating_sub(1));
+                                self.history.insert(0, oldest);
+                            } else {
+                                self.history.truncate(h);
+                            }
+                        }
+                        None => self.history.truncate(h),
+                    }
                 }
                 self.status = e.to_string();
             }

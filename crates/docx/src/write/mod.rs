@@ -67,6 +67,10 @@ pub(crate) struct Writer<'d> {
     para_ids: HashMap<usize, String>,
     /// A note reference mark to put at the start of the next paragraph.
     pending_mark: Option<&'static str>,
+    /// Writing a TOC heading: its TOC field stays open so the entries become the field's result.
+    toc_hold_end: bool,
+    /// Close the open TOC field at the end of the paragraph being written.
+    toc_end_here: bool,
     /// Media keys actually referenced by a written drawing.
     used_media: std::collections::BTreeSet<String>,
 }
@@ -88,6 +92,8 @@ pub fn write(doc: &Document) -> Result<Vec<u8>, DocxError> {
         hf: Vec::new(),
         para_ids: HashMap::new(),
         pending_mark: None,
+        toc_hold_end: false,
+        toc_end_here: false,
         used_media: Default::default(),
     };
     wr.assign_media();

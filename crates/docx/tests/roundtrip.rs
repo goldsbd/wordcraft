@@ -448,6 +448,33 @@ fn notes_round_trip() {
     assert_eq!(r.settings.endnote_format, NumFormat::UpperRoman);
 }
 
+/// `references.footnote` starts the note's own text with a reference to the note, so the editor shows
+/// its number. In the file that is the `w:footnoteRef` mark; a `w:footnoteReference` there would make
+/// the note cite itself, which LibreOffice refuses to open.
+#[test]
+fn note_never_references_itself() {
+    let mut d = Document::new();
+    let f = d.add_part(PartKind::Footnote, Vec::new());
+    let mut note = Paragraph::with_text(" The note.", CharProps::default());
+    note.insert_object(0, InlineObject::NoteRef { kind: NoteKind::Footnote, id: f, custom: String::new() }, &CharProps::default()).unwrap();
+    d.parts.get_mut(&f).unwrap().blocks = vec![para_block(note)];
+    let mut p = Paragraph::with_text("Text", CharProps::default());
+    p.insert_object(4, InlineObject::NoteRef { kind: NoteKind::Footnote, id: f, custom: String::new() }, &CharProps::default()).unwrap();
+    d.body = vec![para_block(p)];
+
+    let bytes = wordcraft_docx::write(&d).expect("write");
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).unwrap();
+    let mut xml = String::new();
+    std::io::Read::read_to_string(&mut zip.by_name("word/footnotes.xml").unwrap(), &mut xml).unwrap();
+    assert!(!xml.contains("<w:footnoteReference"), "a footnote cites itself: {xml}");
+    assert_eq!(xml.matches("<w:footnoteRef/>").count(), 1, "{xml}");
+
+    let r = wordcraft_docx::read(&bytes).expect("read");
+    let got = paras(&r)[0];
+    let Some(InlineObject::NoteRef { id, .. }) = got.objects.first() else { panic!("{:?}", got.objects) };
+    assert_eq!(part_text(&r, Some(*id)).trim(), "The note.");
+}
+
 /// The TOC is a `Contents` paragraph ending in an empty `TOC` field, followed by TOC-styled entries.
 /// In the file the field must contain the entries, inside Word's Table of Contents content control,
 /// or Word shows them as plain text with no Update Table.

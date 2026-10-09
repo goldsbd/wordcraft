@@ -300,6 +300,9 @@ impl WordApp {
     pub fn logic(&mut self, ctx: &egui::Context) {
         if !self.styled {
             theme::install_fonts(ctx);
+            // Mod with -, = and 0 are Word shortcuts (optional hyphen, subscript, paragraph spacing);
+            // egui's keyboard zoom would also scale the whole window on them. Zoom is View › Zoom.
+            ctx.options_mut(|o| o.zoom_with_keyboard = false);
             self.styled = true;
         }
         let dark = self.ui.dark || self.session.view.dark_mode;
@@ -483,5 +486,31 @@ pub fn now_ms() -> f64 {
     #[cfg(target_arch = "wasm32")]
     {
         0.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mod_key(key: egui::Key) -> egui::Event {
+        egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND }
+    }
+
+    /// Issue #14: Mod+- (optional hyphen) also zoomed the whole window out, so it read as "zoom out".
+    #[test]
+    fn word_shortcuts_do_not_zoom_the_window() {
+        let ctx = egui::Context::default();
+        let mut app = WordApp::new(Session::new(wordcraft_doc::Document::new()), Services::default());
+        let mut frame = |events: Vec<egui::Event>| {
+            let input = egui::RawInput { events, ..Default::default() };
+            // No painter here: dropping the font atlas delta unapplied trips an epaint debug assertion.
+            ctx.run_ui(input, |ui| app.logic(ui.ctx())).drop_without_applying_deltas();
+        };
+        frame(Vec::new());
+        frame(vec![mod_key(egui::Key::Minus)]);
+        frame(vec![mod_key(egui::Key::Minus)]);
+        frame(Vec::new());
+        assert_eq!(ctx.zoom_factor(), 1.0);
     }
 }

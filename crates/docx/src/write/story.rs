@@ -301,6 +301,10 @@ impl Writer<'_> {
             InlineObject::Field { instr, result, locked } => self.field(w, instr, result, *locked, props),
             InlineObject::NoteRef { kind, id, custom } => {
                 let foot = *kind == NoteKind::Footnote;
+                if self.current_note == Some((foot, *id)) {
+                    // The note's own number: already written as the w:footnoteRef / w:endnoteRef mark.
+                    return;
+                }
                 let nid = self.note_id(*id, foot);
                 let mut p = props.clone();
                 if p.style.is_none() && p.vert_align.is_none() {

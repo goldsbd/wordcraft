@@ -67,6 +67,8 @@ pub(crate) struct Writer<'d> {
     para_ids: HashMap<usize, String>,
     /// A note reference mark to put at the start of the next paragraph.
     pending_mark: Option<&'static str>,
+    /// The note being written (is footnote, part id): its reference to itself is the mark above.
+    current_note: Option<(bool, u32)>,
     /// Writing a TOC heading: its TOC field stays open so the entries become the field's result.
     toc_hold_end: bool,
     /// Close the open TOC field at the end of the paragraph being written.
@@ -92,6 +94,7 @@ pub fn write(doc: &Document) -> Result<Vec<u8>, DocxError> {
         hf: Vec::new(),
         para_ids: HashMap::new(),
         pending_mark: None,
+        current_note: None,
         toc_hold_end: false,
         toc_end_here: false,
         used_media: Default::default(),
@@ -178,7 +181,7 @@ pub fn write(doc: &Document) -> Result<Vec<u8>, DocxError> {
             let nid = k.to_string();
             w.open(tag, &[("w:id", &nid)]);
             let blocks: Blocks = doc.parts.get(&pid).map(|p| p.blocks.clone()).unwrap_or_default();
-            wr.note_blocks(&mut w, &blocks, &mut prels, foot);
+            wr.note_blocks(&mut w, &blocks, &mut prels, foot, pid);
             w.close(tag);
         }
         w.close(root);
@@ -446,9 +449,11 @@ impl Writer<'_> {
     }
 
     /// Note stories: the first paragraph starts with the note's own reference mark.
-    fn note_blocks(&mut self, w: &mut W, blocks: &Blocks, rels: &mut PartRels, foot: bool) {
+    fn note_blocks(&mut self, w: &mut W, blocks: &Blocks, rels: &mut PartRels, foot: bool, part: u32) {
         self.pending_mark = Some(if foot { "w:footnoteRef" } else { "w:endnoteRef" });
+        self.current_note = Some((foot, part));
         self.blocks(w, blocks, rels, false, 0);
+        self.current_note = None;
         self.pending_mark = None;
     }
 }

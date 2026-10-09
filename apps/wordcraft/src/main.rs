@@ -9,6 +9,8 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod control_server;
+#[cfg(any(target_os = "windows", test))]
+mod graphics;
 
 use wordcraft_engine::Session;
 use wordcraft_ui_egui::{Services, UiState, WordApp};
@@ -136,6 +138,9 @@ fn main() -> eframe::Result {
     if let Some(icon) = app_icon() {
         options.viewport = options.viewport.with_icon(icon);
     }
+    // Before eframe creates the wgpu instance: default Windows to DirectX 12 only (see graphics.rs).
+    #[cfg(target_os = "windows")]
+    graphics::configure(&mut options, eframe::wgpu::Backends::from_env());
     eframe::run_native(
         "WordCraft",
         options,

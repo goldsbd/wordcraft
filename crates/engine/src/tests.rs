@@ -101,6 +101,59 @@ fn failed_command_keeps_undo_and_redo() {
 }
 
 #[test]
+fn failed_command_restores_history_changed_by_nested_commands() {
+    // `file.inspect` runs `review.deleteComment` (allowed in a comments-only document, and it
+    // checkpoints), then `review.acceptAll` (refused). The refusal must leave the undo and
+    // redo stacks exactly as they were, including at and next to the history limit, where the
+    // outer and nested checkpoints each evict the oldest step.
+    fn timeline(s: &mut Session) -> Vec<(Vec<String>, wordcraft_doc::Document)> {
+        let mut out = Vec::new();
+        while s.can_redo() {
+            run(s, "edit.redo", json!({}));
+        }
+        loop {
+            out.push((s.undo_labels(), s.doc.clone()));
+            if !s.can_undo() {
+                return out;
+            }
+            run(s, "edit.undo", json!({}));
+        }
+    }
+    let kept = {
+        let mut s = s();
+        for i in 1..=600 {
+            run(&mut s, "para.indents", json!({"left": i as f32}));
+        }
+        s.undo_labels().len()
+    };
+    // Below the limit there is room for a redo step too; at the limit an Undo would leave one free.
+    for (len, redo) in [(kept - 1, Some("New Comment")), (kept, None)] {
+        let session = || {
+            let mut s = s();
+            run(&mut s, "text.insert", json!({"text": "note"}));
+            for i in 1..=len + usize::from(redo.is_some()) - 4 {
+                run(&mut s, "para.indents", json!({"left": i as f32}));
+            }
+            run(&mut s, "review.restrict", json!({"mode": "comments"}));
+            run(&mut s, "review.newComment", json!({"text": "one"}));
+            run(&mut s, "review.newComment", json!({"text": "two"}));
+            if redo.is_some() {
+                run(&mut s, "edit.undo", json!({}));
+            }
+            assert_eq!(s.undo_labels().len(), len);
+            assert_eq!(s.redo_label(), redo);
+            s
+        };
+        let mut failed = session();
+        let err = failed.run("file.inspect", &json!({"remove": ["comments", "revisions"]}));
+        assert!(matches!(err, Err(crate::CmdError::Disabled(_))), "{len}: {err:?}");
+        assert_eq!(failed.undo_labels().len(), len, "{len}: undo steps");
+        assert_eq!(failed.redo_label(), redo, "{len}: redo step");
+        assert!(timeline(&mut failed) == timeline(&mut session()), "{len}: undo history changed");
+    }
+}
+
+#[test]
 fn backspace_and_delete() {
     let mut s = s();
     run(&mut s, "text.insert", json!({"text": "abc"}));

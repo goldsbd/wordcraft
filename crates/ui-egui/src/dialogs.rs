@@ -756,22 +756,28 @@ fn body(app: &mut WordApp, ui: &mut Ui, d: &mut Dialog) -> bool {
         Dialog::SaveChanges { name, .. } => {
             ui.label(egui::RichText::new(crate::i18n::fmt(tl!("Do you want to save changes to {name}?"), &[("name", name)])).font(semibold(15.0)));
             ui.label(tl!("Your changes will be lost if you don't save them."));
-            let mut answer = None;
             ui.add_space(8.0);
-            ui.horizontal(|ui| {
+            let buttons = ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button(tl!("Cancel")).clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                        answer = Some("cancel");
-                    }
-                    if ui.button(tl!("Don't Save")).clicked() {
-                        answer = Some("dontSave");
-                    }
+                    let cancel = ui.button(tl!("Cancel"));
+                    let dont_save = ui.button(tl!("Don't Save"));
                     let save = ui.add(egui::Button::new(egui::RichText::new(tl!("Save")).color(egui::Color32::WHITE)).fill(crate::theme::APP_COLOR));
-                    if save.clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        answer = Some("save");
-                    }
-                });
+                    [(cancel, "cancel"), (dont_save, "dontSave"), (save, "save")]
+                })
+                .inner
             });
+            let buttons = buttons.inner;
+            // Enter clicks the focused button; it means Save only when none of them has focus.
+            let focused = buttons.iter().any(|(b, _)| b.has_focus());
+            let answer = if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                Some("cancel")
+            } else if let Some((_, a)) = buttons.iter().find(|(b, _)| b.clicked()) {
+                Some(*a)
+            } else if !focused && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                Some("save")
+            } else {
+                None
+            };
             let Some(answer) = answer else { return false };
             // `ui.saveChanges` reads the prompt from `app.dialog`, which `show` has taken out.
             app.dialog = Some(d.clone());

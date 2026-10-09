@@ -843,6 +843,54 @@ mod tests {
         assert!(body_text(&a).contains(UNSAVED), "nothing was replaced on the way out");
     }
 
+    /// Enter activates the focused prompt button; it means Save only when no button has focus.
+    /// (Enter on a focused Cancel or Don't Save used to be overridden by a blanket Enter → Save.)
+    #[test]
+    fn enter_answers_with_the_focused_button() {
+        use egui_kittest::kittest::Queryable;
+        for (focus, quits, saves) in [(Some("Cancel"), false, false), (Some("Don't Save"), true, false), (None, true, true)] {
+            let dir = scratch(&format!("enter-{}", focus.map_or(0, str::len)));
+            let path = docx_on_disk(&dir, "Draft");
+            let before = std::fs::read(&path).unwrap();
+            let mut a = app();
+            a.run("file.open", json!({"path": path.to_string_lossy()})).unwrap();
+            a.run("text.insert", json!({"text": "Revised "})).unwrap();
+            a.run("file.close", json!({})).unwrap();
+            assert_eq!(prompt(&a), Some("saveChanges"));
+            // The dialog's theme fonts are installed on the first frame and usable from the next.
+            let mut fonts = false;
+            let mut h = egui_kittest::Harness::builder().build_ui_state(
+                move |ui, app: &mut WordApp| {
+                    let ctx = ui.ctx().clone();
+                    if fonts {
+                        dialogs::show(app, &ctx);
+                    } else {
+                        theme::install_fonts_for(&ctx, false);
+                        fonts = true;
+                    }
+                },
+                a,
+            );
+            for _ in 0..3 {
+                h.step();
+            }
+            if let Some(label) = focus {
+                h.get_by_label(label).focus();
+                h.step();
+                assert!(h.get_by_label(label).is_focused(), "{label} has focus");
+            }
+            h.key_press(egui::Key::Enter);
+            for _ in 0..3 {
+                h.step();
+            }
+            let a = h.state();
+            assert_eq!(prompt(a), None, "{focus:?}: answered");
+            assert_eq!(a.quit_requested, quits, "{focus:?}: quit");
+            assert_eq!(std::fs::read(&path).unwrap() != before, saves, "{focus:?}: file written");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
     /// Save writes the document first, then carries on with what the user asked for.
     #[test]
     fn save_then_continue() {

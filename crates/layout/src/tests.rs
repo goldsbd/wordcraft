@@ -452,6 +452,46 @@ fn text_wraps_around_square_float() {
 }
 
 #[test]
+fn deleted_float_leaves_no_wrap_area_without_markup() {
+    // A square-wrapped shape anchored at the start of the paragraph, its anchor track-deleted.
+    let text = "Words flow around the picture here. ".repeat(30);
+    let mut d = Document::from_text(&text);
+    let float = wordcraft_doc::para::Float {
+        wrap: wordcraft_doc::para::Wrap::Square,
+        h_rel: wordcraft_doc::para::Anchor::Column,
+        v_rel: wordcraft_doc::para::Anchor::Paragraph,
+        x: 0.0,
+        y: 0.0,
+        dist: 9.0,
+    };
+    let shape = InlineObject::Shape {
+        kind: wordcraft_doc::para::ShapeKind::Rectangle,
+        w: 144.0,
+        h: 100.0,
+        fill: None,
+        stroke: None,
+        stroke_width: 1.0,
+        float,
+        story: None,
+    };
+    d.insert_object(&Pos::body(0, 0), shape, &Default::default()).unwrap();
+    let obj = wordcraft_doc::para::OBJ.len_utf8();
+    d.format_range(&Pos::body(0, 0), &Pos::body(0, obj), &|c| c.del = Some(0)).unwrap();
+    // Where the first line starts, and whether the shape is placed.
+    let first = |hide_deleted: bool| {
+        let l = layout(&d, &mut LayoutCache::new(), &LayoutOptions { hide_deleted, ..Default::default() });
+        let p = &l.pages[0];
+        let Some(Placed::Lines { para, .. }) = p.items.iter().find(|i| matches!(i, Placed::Lines { .. })) else { panic!() };
+        (para.lines[0].left, p.items.iter().any(|i| matches!(i, Placed::Shape { .. })))
+    };
+    // With markup the deleted shape is shown and the text flows beside it.
+    let (left, shown) = first(false);
+    assert!(left >= 144.0 && shown, "{left} {shown}");
+    // Final text: no shape, and no gap where it was.
+    assert_eq!(first(true), (0.0, false));
+}
+
+#[test]
 fn line_numbers_borders_text_boxes() {
     let mut d = Document::from_text("one\ntwo\nthree");
     d.last_section.line_numbers = Some(Default::default());

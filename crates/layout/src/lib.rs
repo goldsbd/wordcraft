@@ -290,6 +290,13 @@ impl Ctx<'_> {
     }
 }
 
+/// Which of `p`'s objects (by index) are tracked deletions the layout leaves out: none unless
+/// `hide_deleted`.
+fn deleted_objects(p: &Paragraph, hide_deleted: bool) -> impl Fn(usize) -> bool + '_ {
+    let offs = if hide_deleted { p.object_offsets() } else { Vec::new() };
+    move |k| offs.get(k).is_some_and(|off| p.props_of_char(*off).del.is_some())
+}
+
 /// Note part ids in document order → numbers (footnotes and endnotes numbered separately). With
 /// `hide_deleted`, notes whose reference mark is a tracked deletion are left out, as in the final text.
 fn note_numbers(doc: &Document, hide_deleted: bool) -> HashMap<u32, u32> {
@@ -297,9 +304,9 @@ fn note_numbers(doc: &Document, hide_deleted: bool) -> HashMap<u32, u32> {
     let (mut f, mut e) = (0u32, 0u32);
     for path in doc.para_paths(StoryRef::Body) {
         if let Some(p) = doc.para(StoryRef::Body, &path) {
-            let offs = if hide_deleted { p.object_offsets() } else { Vec::new() };
+            let deleted = deleted_objects(p, hide_deleted);
             for (k, o) in p.objects.iter().enumerate() {
-                if offs.get(k).is_some_and(|off| p.props_of_char(*off).del.is_some()) {
+                if deleted(k) {
                     continue;
                 }
                 if let InlineObject::NoteRef { kind, id, .. } = o {
@@ -786,9 +793,12 @@ fn place_para(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block: usize, 
     let y0 = pb.y + ctx.doc.styles.resolve_para(&p.props).space_before;
     let mut float_rects: HashMap<usize, Rect> = HashMap::new();
     if !pb.web {
+        // A deleted object is not placed in the final text, so it takes no room either.
+        let deleted = deleted_objects(p, ctx.opts.hide_deleted);
         for (oi, o) in p.objects.iter().enumerate() {
             if let InlineObject::Image { w, h, float, .. } | InlineObject::Shape { w, h, float, .. } = o
                 && float.wrap != Wrap::Inline
+                && !deleted(oi)
             {
                 let r = float_rect(pb, col_x, y0, *w, *h, float);
                 float_rects.insert(oi, r);

@@ -776,6 +776,17 @@ impl Builder {
         None
     }
 
+    fn close_head_for_start(&mut self, name: &str) {
+        // A body-content start tag implicitly ends an omitted </head>.
+        if !matches!(
+            name,
+            "html" | "head" | "base" | "basefont" | "bgsound" | "link" | "meta" | "noframes" | "noscript" | "script" | "style" | "template" | "title"
+        ) && let Some(k) = self.find_open(|e| e.kind == ElKind::Head, |_| false)
+        {
+            self.pop_to(k);
+        }
+    }
+
     fn start(&mut self, name: &str, attrs: &[(String, String)], self_close: bool) {
         // Head metadata.
         match name {
@@ -1043,6 +1054,7 @@ pub fn parse(s: &str) -> Flow {
         match t {
             Tok::Text(t) => b.text(&t),
             Tok::Start { name, attrs, self_close } => {
+                b.close_head_for_start(&name);
                 if matches!(name.as_str(), "script" | "style" | "noscript" | "template" | "textarea") && !self_close {
                     lx.skip_past(&format!("</{name}"));
                     lx.skip_past(">");
@@ -1412,6 +1424,29 @@ mod tests {
         );
         let FBlock::Para(p) = &f.blocks[1] else { panic!() };
         assert!(matches!(&p.inlines[1], Inline::Text(t, f) if t == "bold" && f.bold));
+    }
+
+    #[test]
+    fn omitted_head_keeps_body_text() {
+        let f = parse("<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>T</title>\n<body><p>Hello world</p><p>Second</p></body></html>");
+        assert_eq!(f.meta.title, "T");
+        assert_eq!(texts(&f), vec!["NormalNone:Hello world", "NormalNone:Second"]);
+
+        for body in [
+            "<p>Hello world</p>",
+            "<div>Hello world</div>",
+            "<span>Hello world</span>",
+            "<a href='https://example.test'>Hello world</a>",
+            "<custom>Hello world</custom>",
+            "<textarea>ignored</textarea>Hello world",
+        ] {
+            let f = parse(&format!(
+                "<html><head><title>T &amp; U</title><meta name='author' content='Ann'><style>p{{}}</style><script>ignored</script>{body}",
+            ));
+            assert_eq!(f.meta.title, "T & U");
+            assert_eq!(f.meta.author, "Ann");
+            assert_eq!(texts(&f), vec!["NormalNone:Hello world"], "{body}");
+        }
     }
 
     #[test]

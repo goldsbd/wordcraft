@@ -92,6 +92,24 @@ fn deletions_leave_the_final_text_layout() {
 }
 
 #[test]
+fn deleted_soft_hyphen_is_no_hyphenation_point_without_markup() {
+    // "ab\u{ad}cdef" in a column where "ab-" fits but the whole word does not; only the soft
+    // hyphen is track-deleted.
+    let mut d = Document::from_text("ab\u{ad}cdef");
+    d.format_range(&Pos::body(0, 2), &Pos::body(0, 4), &|c| c.del = Some(0)).unwrap();
+    d.format_paragraphs(&Pos::body(0, 0), &Pos::body(0, 0), &|p| p.indent_right = Some(468.0 - 26.0)).unwrap();
+    let hyphens = |hide_deleted: bool| {
+        let l = layout(&d, &mut LayoutCache::new(), &LayoutOptions { hide_deleted, ..Default::default() });
+        let Some(Placed::Lines { para, .. }) = l.pages[0].items.iter().find(|i| matches!(i, Placed::Lines { .. })) else { panic!() };
+        para.lines.iter().filter(|l| l.hyphen.is_some()).count()
+    };
+    // With markup the deleted soft hyphen is still there, and the word breaks at it.
+    assert_eq!(hyphens(false), 1);
+    // Final text: the soft hyphen is gone, so is the hyphen.
+    assert_eq!(hyphens(true), 0);
+}
+
+#[test]
 fn page_break_char_starts_new_page() {
     let mut d = Document::from_text("one");
     d.insert_text(&Pos::body(0, 3), "\u{000C}", &Default::default()).unwrap();

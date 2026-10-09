@@ -538,7 +538,7 @@ pub fn layout_para(p: &Paragraph, env: &ParaEnv) -> ParaLayout {
         drop_cap,
         hyph_after: Vec::new(),
     };
-    pl.hyph_after = hyphenation_points(p, &pl, env.doc.settings.auto_hyphenation && !pl.rp.suppress_hyphens);
+    pl.hyph_after = hyphenation_points(p, &pl, env.doc.settings.auto_hyphenation && !pl.rp.suppress_hyphens, env.hide_deleted);
     for k in pl.hyph_after.clone() {
         if let Some(c) = pl.clusters.get_mut(k as usize) {
             c.break_after = true;
@@ -1000,8 +1000,9 @@ fn hyphen_glyph(pl: &ParaLayout, style: u16, cache: &mut Vec<(u16, u32, f32)>) -
 }
 
 /// Clusters after which a line may end with a hyphen: soft hyphens always, and dictionary or
-/// pattern hyphenation points of each word when automatic hyphenation is on.
-fn hyphenation_points(p: &Paragraph, pl: &ParaLayout, auto: bool) -> Vec<u32> {
+/// pattern hyphenation points of each word when automatic hyphenation is on. With `hide_deleted`,
+/// never in a tracked deletion: that text is not in the final document.
+fn hyphenation_points(p: &Paragraph, pl: &ParaLayout, auto: bool, hide_deleted: bool) -> Vec<u32> {
     let mut bytes: Vec<usize> = p.text.char_indices().filter(|(_, c)| *c == SOFT_HYPHEN).map(|(i, c)| i + c.len_utf8()).collect();
     if auto {
         let lim = wordcraft_proof::hyphen::Limits::default();
@@ -1037,6 +1038,7 @@ fn hyphenation_points(p: &Paragraph, pl: &ParaLayout, auto: bool) -> Vec<u32> {
         .iter()
         .enumerate()
         .filter(|(_, c)| matches!(c.kind, ClKind::Text | ClKind::Marker) && bytes.binary_search(&c.end).is_ok())
+        .filter(|(_, c)| !(hide_deleted && pl.styles.get(c.style as usize).is_some_and(|s| s.rc.del.is_some())))
         .map(|(i, _)| i as u32)
         .collect();
     out.dedup();

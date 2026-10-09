@@ -225,6 +225,32 @@ fn tracked_deletions_are_left_out_without_markup() {
 }
 
 #[test]
+fn deleted_heading_text_stays_out_of_bookmarks_and_tags() {
+    use wordcraft_doc::{Revision, RevisionKind};
+    let mut d = Document::new();
+    d.revisions.push(Revision { kind: RevisionKind::Delete, author: "Ada".into(), date: String::new() });
+    let del = CharProps { del: Some(0), ..Default::default() };
+    // "Intro SECRET Part" with "SECRET " deleted, then a heading deleted as a whole.
+    let mut h = Paragraph::with_text("Intro ", CharProps::default()).styled("Heading1");
+    let n = h.len();
+    h.insert_text(n, "SECRET ", &del).unwrap();
+    let n = h.len();
+    h.insert_text(n, "Part", &CharProps::default()).unwrap();
+    let gone = Paragraph::with_text("GONE", del.clone()).styled("Heading1");
+    d.body = vec![para_block(h), para_block(Paragraph::with_text("Body text", CharProps::default())), para_block(gone)];
+    let raw = |opts: PdfOptions| String::from_utf8_lossy(&export(&d, &PdfOptions { compress: false, ..opts }).unwrap()).into_owned();
+    // Bookmarks alone (untagged), then bookmarks and heading tags: the final text only.
+    for tagged in [false, true] {
+        let pdf = raw(PdfOptions { tagged, ..Default::default() });
+        assert!(!pdf.contains("SECRET") && !pdf.contains("GONE"), "tagged {tagged}: deleted heading text in the PDF");
+        assert!(pdf.contains("/Outlines") && pdf.contains("Intro Part"), "tagged {tagged}: no bookmark for the heading");
+    }
+    // With markup the deleted text is shown, and so it is in the bookmarks.
+    let pdf = raw(PdfOptions { include_markup: true, ..Default::default() });
+    assert!(pdf.contains("Intro SECRET Part") && pdf.contains("GONE"));
+}
+
+#[test]
 fn text_mapping_handles_ligatures_and_extras() {
     let d = Document::from_text("office affine");
     let lay = layout(&d, &mut LayoutCache::new(), &LayoutOptions::default());

@@ -499,6 +499,12 @@ impl Exporter<'_> {
         page_display(self.doc, &one, dopts)
     }
 
+    /// A heading's text for bookmarks and tags: what the pages show, so tracked deletions only
+    /// with markup.
+    fn title_text(&self, p: &wordcraft_doc::Paragraph) -> String {
+        if self.opts.include_markup { p.plain_text() } else { p.final_text() }
+    }
+
     /// The structure entry for a paragraph (created on first sight, in reading order).
     fn entry(&mut self, story: StoryRef, path: &DocPath) -> usize {
         if let Some(i) = self.tag_index.get(&(story, path.clone())) {
@@ -506,7 +512,7 @@ impl Exporter<'_> {
         }
         let kind: TagKind = match self.doc.para(story, path).map(|p| self.doc.styles.resolve_para(&p.props).outline_level) {
             Some(Some(l)) if l < 6 => {
-                let title = self.doc.para(story, path).map(|p| p.plain_text().trim().chars().take(200).collect::<String>());
+                let title = self.doc.para(story, path).map(|p| self.title_text(p).trim().chars().take(200).collect::<String>());
                 Tag::Hn(NonZeroU16::new(u16::from(l) + 1).unwrap_or(NonZeroU16::MIN), title).into()
             }
             _ => Tag::P.into(),
@@ -854,7 +860,7 @@ impl Exporter<'_> {
                 let Placed::Lines { story: StoryRef::Body, path, l0: 0, x, y, .. } = it else { continue };
                 let Some(p) = self.doc.para(StoryRef::Body, path) else { continue };
                 let Some(level) = self.doc.styles.resolve_para(&p.props).outline_level else { continue };
-                let title: String = p.plain_text().split_whitespace().collect::<Vec<_>>().join(" ").chars().take(200).collect();
+                let title: String = self.title_text(p).split_whitespace().collect::<Vec<_>>().join(" ").chars().take(200).collect();
                 if title.is_empty() {
                     continue;
                 }

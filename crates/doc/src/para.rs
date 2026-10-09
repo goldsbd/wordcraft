@@ -301,6 +301,24 @@ impl Paragraph {
         }
         out
     }
+    /// [`Self::plain_text`] without tracked deletions: the text as it reads with every change accepted.
+    pub fn final_text(&self) -> String {
+        let deleted: Vec<std::ops::Range<usize>> = self.run_ranges().filter(|(_, c)| c.del.is_some()).map(|(r, _)| r).collect();
+        let mut out = String::with_capacity(self.text.len());
+        let mut k = 0;
+        for (i, c) in self.text.char_indices() {
+            let keep = !deleted.iter().any(|r| r.contains(&i));
+            if c == OBJ {
+                if keep && let Some(o) = self.objects.get(k) {
+                    out.push_str(o.plain_text());
+                }
+                k += 1;
+            } else if keep {
+                out.push(c);
+            }
+        }
+        out
+    }
 
     fn check(&self, off: usize) -> Result<()> {
         if off > self.text.len() || !self.text.is_char_boundary(off) {

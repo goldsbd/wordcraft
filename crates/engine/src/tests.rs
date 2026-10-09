@@ -176,6 +176,45 @@ fn find_replace() {
 }
 
 #[test]
+fn replace_under_track_changes_skips_deleted_text() {
+    // Replace marks the match deleted and leaves it in the text; the next
+    // step must not find it again, or Replace never advances.
+    let mut s = s();
+    run(&mut s, "document.setText", json!({"text": "one cat two cat"}));
+    run(&mut s, "review.trackChanges", json!({"value": true}));
+    run(&mut s, "caret.docStart", json!({}));
+    assert_eq!(run(&mut s, "edit.find", json!({"text": "cat"}))["count"], 2);
+    let mut remaining = Vec::new();
+    for _ in 0..4 {
+        remaining.push(run(&mut s, "edit.replace", json!({"text": "cat", "with": "dog"}))["remaining"].clone());
+    }
+    assert_eq!(remaining, [json!(1), json!(0), json!(0), json!(0)]);
+    assert_eq!(run(&mut s, "edit.find", json!({"text": "cat"}))["count"], 0);
+    run(&mut s, "review.acceptAll", json!({}));
+    assert_eq!(text(&s), "one dog two dog");
+
+    // A match that runs across tracked-deleted text is not in the document.
+    let mut s = self::s();
+    run(&mut s, "document.setText", json!({"text": "cat"}));
+    run(&mut s, "review.trackChanges", json!({"value": true}));
+    run(&mut s, "select.range", json!({"anchor": {"block": 0, "off": 1}, "focus": {"block": 0, "off": 2}}));
+    run(&mut s, "text.delete", json!({}));
+    assert_eq!(text(&s), "cat", "the deletion is tracked, not applied");
+    assert_eq!(run(&mut s, "edit.find", json!({"text": "cat"}))["count"], 0);
+    assert_eq!(run(&mut s, "edit.find", json!({"text": "t"}))["count"], 1);
+
+    // Without Track Changes, Replace steps through every match as before.
+    let mut s = self::s();
+    run(&mut s, "document.setText", json!({"text": "one cat two cat"}));
+    run(&mut s, "caret.docStart", json!({}));
+    run(&mut s, "edit.find", json!({"text": "cat"}));
+    run(&mut s, "edit.replace", json!({"text": "cat", "with": "dog"}));
+    let r = run(&mut s, "edit.replace", json!({"text": "cat", "with": "dog"}));
+    assert_eq!(r["remaining"], 0);
+    assert_eq!(text(&s), "one dog two dog");
+}
+
+#[test]
 fn clipboard_round_trip() {
     let mut s = s();
     run(&mut s, "document.setText", json!({"text": "alpha beta\ngamma"}));

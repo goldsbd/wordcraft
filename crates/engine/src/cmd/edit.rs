@@ -110,7 +110,9 @@ fn paste_text(s: &mut Session, v: &Value) -> CmdResult {
     sel_result(s)
 }
 
-/// All matches of the find state in the current story.
+/// All matches of the find state in the current story. Text marked deleted by
+/// Track Changes is no longer part of the document, so a match touching it is
+/// skipped; otherwise Replace would find its own deleted text again.
 fn search(s: &Session, story: StoryRef) -> Result<Vec<(Pos, Pos)>, CmdError> {
     let f = &s.find;
     if f.query.is_empty() {
@@ -126,8 +128,9 @@ fn search(s: &Session, story: StoryRef) -> Result<Vec<(Pos, Pos)>, CmdError> {
     let mut out = Vec::new();
     for path in s.doc.para_paths(story) {
         let Some(p) = s.doc.para(story, &path) else { continue };
+        let deleted: Vec<_> = p.run_ranges().filter(|(_, c)| c.del.is_some()).map(|(r, _)| r).collect();
         for m in re.find_iter(&p.text) {
-            if m.start() == m.end() {
+            if m.start() == m.end() || deleted.iter().any(|r| r.start < m.end() && m.start() < r.end) {
                 continue;
             }
             out.push((Pos { story, path: path.clone(), off: m.start() }, Pos { story, path: path.clone(), off: m.end() }));

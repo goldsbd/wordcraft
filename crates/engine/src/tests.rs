@@ -228,6 +228,24 @@ fn toc_and_fields() {
 }
 
 #[test]
+fn toc_page_numbers_follow_headings() {
+    let mut s = s();
+    run(&mut s, "references.toc", json!({}));
+    run(&mut s, "caret.docEnd", json!({}));
+    for name in ["Alpha", "Bravo", "Charlie"] {
+        run(&mut s, "text.pageBreak", json!({}));
+        run(&mut s, "text.insert", json!({"text": name}));
+        run(&mut s, "para.heading1", json!({}));
+        run(&mut s, "text.newParagraph", json!({}));
+    }
+    run(&mut s, "references.updateToc", json!({}));
+    let t = text(&s);
+    for (name, page) in [("Alpha", 2), ("Bravo", 3), ("Charlie", 4)] {
+        assert!(t.contains(&format!("{name}\t{page}")), "{name} should be on page {page}: {t}");
+    }
+}
+
+#[test]
 fn failed_command_leaves_document_unchanged() {
     let mut s = s();
     run(&mut s, "text.insert", json!({"text": "keep"}));

@@ -7,10 +7,11 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use wordcraft_doc::numbering::{AbstractNum, Level, LevelSuffix, Num};
+use wordcraft_doc::para::OBJ;
 use wordcraft_doc::props::Rgb;
 use wordcraft_doc::section::NumFormat;
 use wordcraft_doc::styles::{Style, StyleKind, StyleSheet, TableStyleParts};
-use wordcraft_doc::{Blocks, Comment, Document, PartKind, Revision, RevisionKind};
+use wordcraft_doc::{Block, Blocks, Comment, Document, InlineObject, PartKind, Revision, RevisionKind};
 
 use crate::DocxError;
 use crate::package::{Package, Rels, rt};
@@ -104,6 +105,7 @@ pub fn read(bytes: &[u8]) -> Result<Document, DocxError> {
         let mut blocks = Blocks::new();
         r.read_blocks(&mut sc, body, &rels, &mut blocks, 0);
         r.flush_pending(&mut sc, &mut blocks);
+        toc_field_to_heading(&mut blocks);
         r.doc.body = blocks;
         if let Some(s) = body.child("w:sectPr") {
             r.doc.last_section = r.read_section(s, &rels);
@@ -120,6 +122,35 @@ pub fn read(bytes: &[u8]) -> Result<Document, DocxError> {
     let mut doc = r.doc;
     doc.ensure_nonempty();
     Ok(doc)
+}
+
+/// Word starts a TOC field in the first entry; the engine keeps it at the end of the TOC heading
+/// (the paragraph holding the field marks where the TOC is). Move it there when one precedes it.
+fn toc_field_to_heading(body: &mut Blocks) {
+    for i in 1..body.len() {
+        let heading = body[i - 1].as_para().filter(|p| p.props.style.as_deref() == Some("TOCHeading"));
+        let has_toc = |o: &InlineObject| matches!(o, InlineObject::Field { instr, .. } if is_toc(instr));
+        if heading.is_none_or(|h| h.objects.iter().any(has_toc)) {
+            continue;
+        }
+        let Some((field, props)) = body[i].as_para().and_then(|p| match p.object_at(0) {
+            Some(f @ InlineObject::Field { result, .. }) if result.is_empty() && has_toc(f) => Some((f.clone(), p.props_of_char(0).clone())),
+            _ => None,
+        }) else {
+            continue;
+        };
+        if let Some(Block::Para(p)) = body.get_mut(i).map(Arc::make_mut) {
+            let _ = p.delete(0, OBJ.len_utf8());
+        }
+        if let Some(Block::Para(h)) = body.get_mut(i - 1).map(Arc::make_mut) {
+            let end = h.len();
+            let _ = h.insert_object(end, field, &props);
+        }
+    }
+}
+
+fn is_toc(instr: &str) -> bool {
+    instr.trim_start().get(..3).is_some_and(|k| k.eq_ignore_ascii_case("TOC"))
 }
 
 /// Built-in style names Word stores in lower case, and how the UI shows them.

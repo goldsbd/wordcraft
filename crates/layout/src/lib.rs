@@ -290,13 +290,18 @@ impl Ctx<'_> {
     }
 }
 
-/// Note part ids in document order → numbers (footnotes and endnotes numbered separately).
-fn note_numbers(doc: &Document) -> HashMap<u32, u32> {
+/// Note part ids in document order → numbers (footnotes and endnotes numbered separately). With
+/// `hide_deleted`, notes whose reference mark is a tracked deletion are left out, as in the final text.
+fn note_numbers(doc: &Document, hide_deleted: bool) -> HashMap<u32, u32> {
     let mut m = HashMap::new();
     let (mut f, mut e) = (0u32, 0u32);
     for path in doc.para_paths(StoryRef::Body) {
         if let Some(p) = doc.para(StoryRef::Body, &path) {
-            for o in &p.objects {
+            let offs = if hide_deleted { p.object_offsets() } else { Vec::new() };
+            for (k, o) in p.objects.iter().enumerate() {
+                if offs.get(k).is_some_and(|off| p.props_of_char(*off).del.is_some()) {
+                    continue;
+                }
                 if let InlineObject::NoteRef { kind, id, .. } = o {
                     let n = match kind {
                         wordcraft_doc::para::NoteKind::Footnote => {
@@ -564,7 +569,7 @@ pub fn layout(doc: &Document, cache: &mut LayoutCache, opts: &LayoutOptions) -> 
         cache.env = env;
     }
     cache.used.clear();
-    let notes = note_numbers(doc);
+    let notes = note_numbers(doc, opts.hide_deleted);
     let notes_hash = hash_of(&{
         let mut v: Vec<_> = notes.iter().map(|(a, b)| (*a, *b)).collect();
         v.sort();

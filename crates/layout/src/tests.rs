@@ -374,6 +374,52 @@ fn footnotes_sit_at_page_bottom() {
 }
 
 #[test]
+fn deleted_note_anchors_take_no_number_and_print_no_note() {
+    use wordcraft_doc::para::NoteKind;
+    let mut d = Document::from_text("Alpha Beta Gamma");
+    let mut ids = Vec::new();
+    // Footnotes after "Alpha" and "Beta", an endnote after "Gamma" (inserted back to front).
+    for (off, kind, part) in [
+        (16, NoteKind::Endnote, wordcraft_doc::PartKind::Endnote),
+        (10, NoteKind::Footnote, wordcraft_doc::PartKind::Footnote),
+        (5, NoteKind::Footnote, wordcraft_doc::PartKind::Footnote),
+    ] {
+        let id = d.add_part(part, vec![wordcraft_doc::para_block(wordcraft_doc::Paragraph::with_text("A note.", Default::default()))]);
+        d.insert_object(&Pos::body(0, off), InlineObject::NoteRef { kind, id, custom: String::new() }, &Default::default()).unwrap();
+        ids.push(id);
+    }
+    let [end_id, second, first] = ids[..] else { panic!() };
+    // Track-delete the first footnote's anchor and the endnote's anchor.
+    let obj = wordcraft_doc::para::OBJ.len_utf8();
+    d.format_range(&Pos::body(0, 5), &Pos::body(0, 5 + obj), &|c| c.del = Some(0)).unwrap();
+    let end = d.para(StoryRef::Body, &Path::top(0)).unwrap().len();
+    d.format_range(&Pos::body(0, end - obj), &Pos::body(0, end), &|c| c.del = Some(0)).unwrap();
+    // The glyphs of each note mark in the body, and whether the endnote's text is placed.
+    let marks = |hide_deleted: bool| {
+        let l = layout(&d, &mut LayoutCache::new(), &LayoutOptions { hide_deleted, ..Default::default() });
+        let items: Vec<&Placed> = l.pages.iter().flat_map(|p| p.items.iter()).collect();
+        let mut marks = HashMap::new();
+        for it in &items {
+            if let Placed::Lines { story: StoryRef::Body, para, .. } = it {
+                for (ci, id) in &para.notes {
+                    let c = &para.clusters[*ci];
+                    marks.insert(*id, para.glyphs[c.g0 as usize..c.g1 as usize].iter().map(|g| g.gid).collect::<Vec<_>>());
+                }
+            }
+        }
+        let endnote = items.iter().any(|i| matches!(i, Placed::Lines { story: StoryRef::Part(p), .. } if *p == end_id));
+        (marks, endnote)
+    };
+    // Markup: footnotes 1 and 2, and the endnote prints.
+    let (full, endnote) = marks(false);
+    assert!(full[&first] != full[&second] && endnote, "{full:?}");
+    // Final text: the surviving footnote is number 1, and the deleted endnote anchor prints no note.
+    let (fin, endnote) = marks(true);
+    assert_eq!(fin.get(&second), full.get(&first), "the surviving footnote keeps number 2");
+    assert!(!endnote, "the endnote of a deleted anchor is printed");
+}
+
+#[test]
 fn text_wraps_around_square_float() {
     let mut d = Document::from_text(&"Words flow around the picture here. ".repeat(30));
     let float = wordcraft_doc::para::Float {

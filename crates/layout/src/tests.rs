@@ -478,54 +478,50 @@ fn tall_rows_split_across_pages() {
 }
 
 #[test]
-fn repeated_header_that_leaves_no_room_does_not_loop() {
-    // Body rows placed once each, and the cells on every page stay inside the body.
-    let check = |t: Table, max_pages: usize| {
-        let mut d = Document::from_text("before\nafter");
-        let rows = t.rows.len();
-        d.insert_block(StoryRef::Body, &Path::top(1), wordcraft_doc::Block::Table(t)).unwrap();
+fn repeated_header_is_followed_by_the_next_row_even_when_it_overflows() {
+    // A one-column table at the top of a letter page (body 648 pt), then an empty paragraph. Returns
+    // the table rows on each page, in order.
+    let rows_per_page = |t: Table| -> Vec<Vec<usize>> {
+        let mut d = Document::new();
+        d.insert_block(StoryRef::Body, &Path::top(0), wordcraft_doc::Block::Table(t)).unwrap();
         let l = lay(&d);
-        assert!(l.pages.len() <= max_pages, "pages {}", l.pages.len());
-        for r in 1..rows {
-            let n = l.pages.iter().flat_map(|p| p.items.iter()).filter(|i| matches!(i, Placed::Cell { row, cell: 0, .. } if *row == r)).count();
-            assert_eq!(n, 1, "row {r} placed {n} times");
-        }
-        for p in &l.pages {
-            for it in &p.items {
-                if let Placed::Cell { rect, .. } = it {
-                    assert!(rect.bottom() <= 792.0 - 72.0 + 0.5, "cell bottom {}", rect.bottom());
-                }
-            }
-        }
+        l.pages
+            .iter()
+            .map(|p| p.items.iter().filter_map(|i| if let Placed::Cell { row, cell: 0, .. } = i { Some(*row) } else { None }).collect())
+            .collect()
     };
-    let tall = |t: &mut Table, r: usize, h: f32| {
-        if let Some(row) = t.rows.get_mut(r) {
-            row.props.height = Some(h);
+    // A header row of `header` points and body rows of `rows` points (at least), one line of text each.
+    let table = |header: f32, rows: &[f32]| {
+        let mut t = Table::new(rows.len() + 1, 1, 468.0);
+        t.rows[0].props.header = true;
+        for (row, h) in t.rows.iter_mut().zip(std::iter::once(&header).chain(rows)) {
+            row.props.height = Some(*h);
             row.props.height_rule = wordcraft_doc::props::HeightRule::AtLeast;
         }
+        t
     };
-    // A header row almost as tall as the page: Word stops repeating it.
-    let mut t = Table::new(20, 2, 468.0);
-    t.rows[0].props.header = true;
-    tall(&mut t, 0, 640.0);
-    check(t, 4);
-    // A 300 pt header and two 400 pt rows: header + row never fit together on one page.
-    let mut t = Table::new(5, 2, 468.0);
-    t.rows[0].props.header = true;
-    tall(&mut t, 0, 300.0);
-    tall(&mut t, 1, 400.0);
-    tall(&mut t, 2, 400.0);
-    check(t, 5);
+    // Header and row fit together: one row per page, under the header.
+    assert_eq!(rows_per_page(table(100.0, &[400.0; 3])), vec![vec![0, 1], vec![0, 2], vec![0, 3]]);
+    // A 300 pt header and 400 pt rows never fit together. As in Word, the first row moves to a new
+    // page, goes under the repeated header and runs into the bottom margin; so does every later row.
+    assert_eq!(rows_per_page(table(300.0, &[400.0; 4])), vec![vec![0], vec![0, 1], vec![0, 2], vec![0, 3], vec![0, 4], vec![]]);
+    // A header that almost fills the page still repeats, with one row under it on each page.
+    assert_eq!(rows_per_page(table(640.0, &[100.0; 3])), vec![vec![0], vec![0, 1], vec![0, 2], vec![0, 3], vec![]]);
+    // A 20-row table under a 640 pt header: one page per row, never a runaway.
+    assert_eq!(rows_per_page(table(640.0, &[12.0; 19])).len(), 21);
+    // A row of text that is taller than the room under the header still splits across pages.
+    let mut t = table(100.0, &[12.0]);
+    let long = "Row text that keeps going and going so the cell grows taller than a page. ".repeat(120);
+    t.rows[1].cells[0].blocks = vec![wordcraft_doc::para_block(wordcraft_doc::Paragraph::with_text(&long, Default::default()))];
+    let pages = rows_per_page(t);
+    assert!(pages.len() >= 3, "{pages:?}");
+    assert!(pages.iter().all(|p| p.first() == Some(&0) && p.contains(&1)), "{pages:?}");
     // An ordinary header still repeats on every page the table reaches.
     let mut t = Table::new(80, 2, 468.0);
     t.rows[0].props.header = true;
-    let mut d = Document::from_text("before\nafter");
-    d.insert_block(StoryRef::Body, &Path::top(1), wordcraft_doc::Block::Table(t)).unwrap();
-    let l = lay(&d);
-    assert!(l.pages.len() >= 2, "pages {}", l.pages.len());
-    for p in &l.pages {
-        assert!(p.items.iter().any(|i| matches!(i, Placed::Cell { row: 0, cell: 0, .. })), "page without header");
-    }
+    let pages = rows_per_page(t);
+    assert!(pages.len() >= 2, "{pages:?}");
+    assert!(pages.iter().all(|p| p.first() == Some(&0)), "{pages:?}");
 }
 
 #[test]

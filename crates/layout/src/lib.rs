@@ -1036,7 +1036,6 @@ fn place_table(ctx: &mut Ctx, pb: &mut PageBuilder, t: &wordcraft_doc::Table, bl
     let width = pb.col_w();
     let tl = table::layout_table(ctx, StoryRef::Body, t, &[block as u32], width, 1);
     let header_rows: Vec<usize> = (0..t.rows.len()).take_while(|r| t.rows.get(*r).is_some_and(|row| row.props.header)).collect();
-    let header_h: f32 = header_rows.iter().filter_map(|r| tl.rows.get(*r)).map(|r| r.height).sum();
     let place = |pb: &mut PageBuilder, row: &table::RowLayout| {
         let (x, y) = (pb.col_x() + tl.x, pb.y);
         if let Some(pg) = pb.page() {
@@ -1051,6 +1050,8 @@ fn place_table(ctx: &mut Ctx, pb: &mut PageBuilder, t: &wordcraft_doc::Table, bl
     for (ri, row) in tl.rows.iter().enumerate() {
         let splittable = !header_rows.contains(&ri) && !t.rows.get(ri).is_some_and(|r| r.props.cant_split);
         let mut rest: Option<table::RowLayout> = None;
+        // On a new page holding only the repeated header rows.
+        let mut fresh = false;
         // Each pass places the part of the row that fits, then breaks the page.
         for _ in 0..1000 {
             let cur = rest.as_ref().unwrap_or(row);
@@ -1063,22 +1064,21 @@ fn place_table(ctx: &mut Ctx, pb: &mut PageBuilder, t: &wordcraft_doc::Table, bl
                     place(pb, &a);
                     rest = Some(b);
                 }
-                None if pb.at_top() => break,
+                // Like Word, a row that does not fit on an empty page, or under the header rows
+                // repeated there, is placed anyway and runs into the bottom margin.
+                None if pb.at_top() || fresh => break,
                 None => {}
             }
             pb.advance(block, body_top);
-            // Repeat header rows, unless they leave no room for this row to start below them. Word
-            // stops repeating a header that fills the page, and repeating it would never make progress.
-            let room = pb.bottom - pb.y - header_h;
-            let cur = rest.as_ref().unwrap_or(row);
-            let starts = cur.height <= room + 0.01 || (splittable && table::split_row(cur, room).is_some());
-            if !header_rows.contains(&ri) && starts {
+            // Repeat header rows.
+            if !header_rows.contains(&ri) {
                 for hr in &header_rows {
                     if let Some(h) = tl.rows.get(*hr) {
                         place(pb, h);
                     }
                 }
             }
+            fresh = true;
         }
         place(pb, rest.as_ref().unwrap_or(row));
     }

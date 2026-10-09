@@ -229,22 +229,21 @@ impl WordApp {
         }
         let document = self.session.document_id();
         let r = self.session.run(id, &params).map_err(|e| e.to_string());
-        // A pending "Save changes?" was about the document that has just been replaced.
-        if self.session.document_id() != document && matches!(self.dialog, Some(dialogs::Dialog::SaveChanges { .. })) {
-            self.dialog = None;
-        }
-        if let Ok(v) = &r {
-            match id {
-                // An explicit save to the document's own file lets AutoSave keep writing there.
-                "file.save" | "file.saveAs"
-                    if v.get("saved").and_then(Value::as_bool) == Some(true)
-                        && v.get("path").and_then(Value::as_str).map(std::path::Path::new) == self.session.path.as_deref() =>
-                {
-                    self.autosave_path = self.session.path.clone();
-                }
-                "file.new" | "file.open" => self.autosave_path = None,
-                _ => {}
+        // When the document has been replaced (not when Open only showed its picker), a pending
+        // "Save changes?" and AutoSave's go-ahead were both about the old one.
+        if self.session.document_id() != document {
+            self.autosave_path = None;
+            if matches!(self.dialog, Some(dialogs::Dialog::SaveChanges { .. })) {
+                self.dialog = None;
             }
+        }
+        // An explicit save to the document's own file lets AutoSave keep writing there.
+        if let Ok(v) = &r
+            && matches!(id, "file.save" | "file.saveAs")
+            && v.get("saved").and_then(Value::as_bool) == Some(true)
+            && v.get("path").and_then(Value::as_str).map(std::path::Path::new) == self.session.path.as_deref()
+        {
+            self.autosave_path = self.session.path.clone();
         }
         self.after_command(id);
         if let Err(e) = &r {
@@ -1006,6 +1005,26 @@ mod tests {
         assert!(!a.session.dirty);
         let saved = wordcraft_engine::io::open_path(&path).unwrap();
         assert!(saved.plain_text(wordcraft_doc::StoryRef::Body).contains("Typed More Original"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Cancelling the Open picker (Mod+O) left the document as it was but turned AutoSave off.
+    #[test]
+    fn cancelling_open_keeps_autosave() {
+        let dir = scratch("autosave-open");
+        let path = dir.join("novel.docx");
+        let mut a = typed();
+        a.services.pick_open = Some(Box::new(|_| None));
+        a.run("file.save", json!({"path": path.to_string_lossy()})).unwrap();
+        assert!(a.autosaves());
+        a.run("file.open", json!({})).unwrap();
+        assert!(a.autosaves(), "the picker was cancelled; nothing was replaced");
+
+        a.run("text.insert", json!({"text": " continues"})).unwrap();
+        a.autosave_tick(now_ms() + 10_000.0);
+        assert!(!a.session.dirty);
+        let saved = wordcraft_engine::io::open_path(&path).unwrap();
+        assert!(saved.plain_text(wordcraft_doc::StoryRef::Body).contains("chapter continues"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -226,6 +226,42 @@ fn display_has_glyphs_and_marks() {
 }
 
 #[test]
+fn runs_differing_only_in_link_or_decoration_keep_their_own_style() {
+    let mut d = Document::from_text("Alpha Beta Gamma Delta");
+    let set = |d: &mut Document, a: usize, b: usize, f: &dyn Fn(&mut wordcraft_doc::props::CharProps)| {
+        d.format_range(&Pos::body(0, a), &Pos::body(0, b), f).unwrap();
+    };
+    set(&mut d, 0, 5, &|c| c.link = Some("https://a.example/".into()));
+    set(&mut d, 6, 10, &|c| c.link = Some("https://b.example/".into()));
+    set(&mut d, 11, 16, &|c| c.strike = Some(true));
+    set(&mut d, 17, 22, &|c| c.double_strike = Some(true));
+    let l = lay(&d);
+    let items = display::page_display(&d, &l.pages[0], &display::DisplayOptions::default());
+    let link_of = |word: &str| {
+        items.iter().find_map(|i| if let display::Draw::Glyphs { text, link, .. } = i { text.contains(word).then(|| link.clone()) } else { None })
+    };
+    assert_eq!(link_of("Alpha"), Some(Some("https://a.example/".into())));
+    assert_eq!(link_of("Beta"), Some(Some("https://b.example/".into())));
+    let strokes: Vec<_> = items.iter().filter_map(|i| if let display::Draw::Line { stroke, .. } = i { Some(*stroke) } else { None }).collect();
+    assert!(strokes.contains(&display::Stroke::Solid) && strokes.contains(&display::Stroke::Double), "{strokes:?}");
+    // Underline colour is per run too.
+    let mut d = Document::from_text("Red Blue");
+    let red = wordcraft_doc::props::Rgb(0xFF, 0, 0);
+    let blue = wordcraft_doc::props::Rgb(0, 0, 0xFF);
+    for (a, b, c) in [(0, 3, red), (4, 8, blue)] {
+        d.format_range(&Pos::body(0, a), &Pos::body(0, b), &|p| {
+            p.underline = Some(wordcraft_doc::props::Underline::Single);
+            p.underline_color = Some(c);
+        })
+        .unwrap();
+    }
+    let l = lay(&d);
+    let items = display::page_display(&d, &l.pages[0], &display::DisplayOptions::default());
+    let colors: Vec<_> = items.iter().filter_map(|i| if let display::Draw::Line { color, .. } = i { Some(*color) } else { None }).collect();
+    assert!(colors.contains(&red) && colors.contains(&blue), "{colors:?}");
+}
+
+#[test]
 fn web_view_is_one_page() {
     let d = Document::from_text(&"text ".repeat(3000));
     let mut c = LayoutCache::new();

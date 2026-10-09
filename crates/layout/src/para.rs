@@ -167,14 +167,10 @@ pub struct Exclusion {
     pub top_bottom: bool,
 }
 
-fn style_key(rc: &ResolvedChar) -> String {
-    format!("{}|{}|{}|{}|{}", rc.font, rc.size, rc.bold, rc.italic, rc.vert_align as u8)
-}
-
 struct Builder<'a> {
     env: &'a ParaEnv<'a>,
     styles: Vec<StyleRun>,
-    style_index: std::collections::HashMap<(String, u32, bool), u16>,
+    style_index: std::collections::HashMap<(String, u32), u16>,
     glyphs: Vec<Glyph>,
     clusters: Vec<Cluster>,
 }
@@ -184,12 +180,9 @@ impl<'a> Builder<'a> {
     fn style(&mut self, rc: &Arc<ResolvedChar>, face_override: Option<FaceRef>, small: bool) -> u16 {
         let r = wordcraft_fonts::word::resolve(&rc.font, rc.bold, rc.italic);
         let face = face_override.unwrap_or(r.face);
-        let key = (
-            format!("{}|{:?}|{}|{}", style_key(rc), rc.color, rc.underline as u8, small),
-            face.id(),
-            rc.strike || rc.double_strike || rc.link.is_some(),
-        );
-        let key = (format!("{}|{:?}|{:?}|{:?}|{:?}|{}", key.0, rc.highlight, rc.shading, rc.ins, rc.del, rc.hidden), key.1, key.2);
+        // The display list reads every run's format (link target, strike kind, underline colour,
+        // baseline shift…) from its StyleRun, so runs share one only when their formats are equal.
+        let key = (format!("{rc:?}|{small}"), face.id());
         if let Some(i) = self.style_index.get(&key) {
             return *i;
         }

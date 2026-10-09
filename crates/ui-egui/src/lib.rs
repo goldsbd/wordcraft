@@ -201,7 +201,7 @@ impl WordApp {
         if self.session.dirty && discards_document(id, &params) {
             let name =
                 self.session.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| self.title_stem());
-            self.dialog = Some(dialogs::Dialog::SaveChanges { name, then: id.to_string(), params });
+            self.dialog = Some(dialogs::Dialog::SaveChanges { name, then: id.to_string(), params, document: self.session.document_id() });
             return Ok(json!({"pending": "saveChanges"}));
         }
         self.execute(id, params)
@@ -227,7 +227,12 @@ impl WordApp {
             }
             return Ok(json!({"downloaded": name, "bytes": bytes.len()}));
         }
+        let document = self.session.document_id();
         let r = self.session.run(id, &params).map_err(|e| e.to_string());
+        // A pending "Save changes?" was about the document that has just been replaced.
+        if self.session.document_id() != document && matches!(self.dialog, Some(dialogs::Dialog::SaveChanges { .. })) {
+            self.dialog = None;
+        }
         if let Ok(v) = &r {
             match id {
                 // An explicit save to the document's own file lets AutoSave keep writing there.
@@ -251,9 +256,12 @@ impl WordApp {
     /// Answer the Save Changes prompt: Save (through Save As for a new document) and carry on,
     /// carry on without saving, or cancel. A failed or cancelled save cancels too.
     fn answer_save_changes(&mut self, choice: SaveChoice) -> Result<Value, String> {
-        let Some(dialogs::Dialog::SaveChanges { then, params, .. }) = self.dialog.take() else {
+        let Some(dialogs::Dialog::SaveChanges { then, params, document, .. }) = self.dialog.take() else {
             return Err("no Save Changes prompt is open".into());
         };
+        if document != self.session.document_id() {
+            return Err("the document the prompt asked about has been replaced".into());
+        }
         let go = match choice {
             SaveChoice::Cancel => false,
             SaveChoice::DontSave => true,
@@ -889,6 +897,35 @@ mod tests {
             assert_eq!(std::fs::read(&path).unwrap() != before, saves, "{focus:?}: file written");
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+
+    /// A prompt about document A outlived an agent replacing A with B, and Don't Save then ran
+    /// the pending New against B, throwing away B's edits under a question naming A.
+    #[test]
+    fn a_prompt_is_dropped_when_its_document_is_replaced() {
+        let dir = scratch("stale");
+        let path = docx_on_disk(&dir, "Agent document");
+        let ctx = egui::Context::default();
+        let mut a = typed();
+        a.run("file.new", json!({})).unwrap();
+        assert_eq!(prompt(&a), Some("saveChanges"));
+        let asked = a.dialog.clone();
+        for command in [
+            json!({"command": "file.open", "params": {"path": path.to_string_lossy()}}),
+            json!({"command": "text.insert", "params": {"text": "Edited "}}),
+        ] {
+            let (req, _reply) = ControlRequest::new("engine.execute", command);
+            control::handle(&mut a, &ctx, &req);
+        }
+        assert_eq!(prompt(&a), None, "the question was about a document that is gone");
+
+        // An answer that arrives anyway (a click in that frame, an agent) doesn't touch B.
+        a.dialog = asked;
+        assert!(a.run("ui.saveChanges", json!({"answer": "dontSave"})).is_err());
+        assert!(body_text(&a).contains("Edited Agent document"));
+        assert_eq!(a.session.path.as_deref(), Some(path.as_path()));
+        assert!(a.session.dirty);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Save writes the document first, then carries on with what the user asked for.

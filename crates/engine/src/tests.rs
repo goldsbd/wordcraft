@@ -349,3 +349,19 @@ fn caret_navigation() {
     run(&mut s, "caret.left", json!({}));
     assert_eq!(s.sel.focus.off, 10);
 }
+
+/// `document_id` tells an edit from a replacement (the UI drops a "Save changes?" prompt
+/// about a document that has been replaced).
+#[test]
+fn document_id_changes_only_when_the_document_is_replaced() {
+    let mut s = s();
+    let first = s.document_id();
+    run(&mut s, "text.insert", json!({"text": "Hello"}));
+    run(&mut s, "format.bold", json!({}));
+    assert_eq!(s.document_id(), first);
+    run(&mut s, "file.new", json!({"template": "letter"}));
+    let second = s.document_id();
+    assert_ne!(second, first);
+    run(&mut s, "file.new", json!({}));
+    assert_ne!(s.document_id(), second);
+}

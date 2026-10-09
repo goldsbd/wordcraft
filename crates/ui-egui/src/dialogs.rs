@@ -103,12 +103,15 @@ pub enum Dialog {
         tab: u8,
     },
     /// "Do you want to save changes?" before a user's New, Open or Close replaces the document
-    /// (see [`WordApp::run`]); `then` runs once it is answered (`ui.saveChanges`).
+    /// (see [`WordApp::run`]); `then` runs once it is answered (`ui.saveChanges`), and only while
+    /// the document it asked about (`Session::document_id`) is still the one open.
     SaveChanges {
         name: String,
         then: String,
         #[serde(skip)]
         params: Value,
+        #[serde(skip)]
+        document: u64,
     },
 }
 

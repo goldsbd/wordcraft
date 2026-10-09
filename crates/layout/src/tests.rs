@@ -413,6 +413,57 @@ fn tall_rows_split_across_pages() {
 }
 
 #[test]
+fn repeated_header_that_leaves_no_room_does_not_loop() {
+    // Body rows placed once each, and the cells on every page stay inside the body.
+    let check = |t: Table, max_pages: usize| {
+        let mut d = Document::from_text("before\nafter");
+        let rows = t.rows.len();
+        d.insert_block(StoryRef::Body, &Path::top(1), wordcraft_doc::Block::Table(t)).unwrap();
+        let l = lay(&d);
+        assert!(l.pages.len() <= max_pages, "pages {}", l.pages.len());
+        for r in 1..rows {
+            let n = l.pages.iter().flat_map(|p| p.items.iter()).filter(|i| matches!(i, Placed::Cell { row, cell: 0, .. } if *row == r)).count();
+            assert_eq!(n, 1, "row {r} placed {n} times");
+        }
+        for p in &l.pages {
+            for it in &p.items {
+                if let Placed::Cell { rect, .. } = it {
+                    assert!(rect.bottom() <= 792.0 - 72.0 + 0.5, "cell bottom {}", rect.bottom());
+                }
+            }
+        }
+    };
+    let tall = |t: &mut Table, r: usize, h: f32| {
+        if let Some(row) = t.rows.get_mut(r) {
+            row.props.height = Some(h);
+            row.props.height_rule = wordcraft_doc::props::HeightRule::AtLeast;
+        }
+    };
+    // A header row almost as tall as the page: Word stops repeating it.
+    let mut t = Table::new(20, 2, 468.0);
+    t.rows[0].props.header = true;
+    tall(&mut t, 0, 640.0);
+    check(t, 4);
+    // A 300 pt header and two 400 pt rows: header + row never fit together on one page.
+    let mut t = Table::new(5, 2, 468.0);
+    t.rows[0].props.header = true;
+    tall(&mut t, 0, 300.0);
+    tall(&mut t, 1, 400.0);
+    tall(&mut t, 2, 400.0);
+    check(t, 5);
+    // An ordinary header still repeats on every page the table reaches.
+    let mut t = Table::new(80, 2, 468.0);
+    t.rows[0].props.header = true;
+    let mut d = Document::from_text("before\nafter");
+    d.insert_block(StoryRef::Body, &Path::top(1), wordcraft_doc::Block::Table(t)).unwrap();
+    let l = lay(&d);
+    assert!(l.pages.len() >= 2, "pages {}", l.pages.len());
+    for p in &l.pages {
+        assert!(p.items.iter().any(|i| matches!(i, Placed::Cell { row: 0, cell: 0, .. })), "page without header");
+    }
+}
+
+#[test]
 fn drop_cap_indents_its_lines() {
     let mut p =
         wordcraft_doc::Paragraph::with_text(&"Every line of this paragraph wraps around a large first letter. ".repeat(6), Default::default());

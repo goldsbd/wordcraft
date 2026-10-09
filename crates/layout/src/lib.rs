@@ -1031,6 +1031,7 @@ fn place_table(ctx: &mut Ctx, pb: &mut PageBuilder, t: &wordcraft_doc::Table, bl
     let width = pb.col_w();
     let tl = table::layout_table(ctx, StoryRef::Body, t, &[block as u32], width, 1);
     let header_rows: Vec<usize> = (0..t.rows.len()).take_while(|r| t.rows.get(*r).is_some_and(|row| row.props.header)).collect();
+    let header_h: f32 = header_rows.iter().filter_map(|r| tl.rows.get(*r)).map(|r| r.height).sum();
     let place = |pb: &mut PageBuilder, row: &table::RowLayout| {
         let (x, y) = (pb.col_x() + tl.x, pb.y);
         if let Some(pg) = pb.page() {
@@ -1061,8 +1062,12 @@ fn place_table(ctx: &mut Ctx, pb: &mut PageBuilder, t: &wordcraft_doc::Table, bl
                 None => {}
             }
             pb.advance(block, body_top);
-            // Repeat header rows.
-            if !header_rows.contains(&ri) {
+            // Repeat header rows, unless they leave no room for this row to start below them. Word
+            // stops repeating a header that fills the page, and repeating it would never make progress.
+            let room = pb.bottom - pb.y - header_h;
+            let cur = rest.as_ref().unwrap_or(row);
+            let starts = cur.height <= room + 0.01 || (splittable && table::split_row(cur, room).is_some());
+            if !header_rows.contains(&ri) && starts {
                 for hr in &header_rows {
                     if let Some(h) = tl.rows.get(*hr) {
                         place(pb, h);

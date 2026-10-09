@@ -194,6 +194,8 @@
 	Distribute Rows	平均分布各行
 	Distributed	分散对齐
 	Do Not Show in TOC	不在目录中显示
+	Do you want to save changes to {name}?	是否保存对 {name} 的更改？
+	Don't Save	不保存
 	Document End	文档结尾
 	Document Formatting	文档格式
 	Document Property	文档属性
@@ -782,3 +784,4 @@
 	📂  Browse…	📂  浏览…
 	{words} words	{words} 个字
 	{selected} of {words} words	{selected}/{words} 个字
+	Your changes will be lost if you don't save them.	如果不保存，您的更改将会丢失。

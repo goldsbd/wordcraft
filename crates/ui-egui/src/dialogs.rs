@@ -1,6 +1,6 @@
 //! Dialogs: Font, Paragraph, Find & Replace, Go To, Insert Table, Page Setup, Link, Bookmark,
-//! Word Count, Zoom, Watermark, New/Modify Style, Command search, About. Every dialog ends by
-//! running a command, so agents get the same result without the dialog.
+//! Word Count, Zoom, Watermark, New/Modify Style, Command search, About, Save Changes. Every
+//! dialog ends by running a command, so agents get the same result without the dialog.
 
 use egui::{Sense, Ui, vec2};
 use serde::Serialize;
@@ -102,6 +102,14 @@ pub enum Dialog {
     About {
         tab: u8,
     },
+    /// "Do you want to save changes?" before a user's New, Open or Close replaces the document
+    /// (see [`WordApp::run`]); `then` runs once it is answered (`ui.saveChanges`).
+    SaveChanges {
+        name: String,
+        then: String,
+        #[serde(skip)]
+        params: Value,
+    },
 }
 
 impl Dialog {
@@ -123,6 +131,7 @@ impl Dialog {
             Dialog::ModifyStyle { .. } => "modifyStyle",
             Dialog::Commands { .. } => "commands",
             Dialog::About { .. } => "about",
+            Dialog::SaveChanges { .. } => "saveChanges",
         }
     }
 
@@ -287,6 +296,7 @@ pub fn show(app: &mut WordApp, ctx: &egui::Context) {
         Dialog::ModifyStyle { .. } => "Modify Style",
         Dialog::Commands { .. } => "Search Commands",
         Dialog::About { .. } => "About WordCraft",
+        Dialog::SaveChanges { .. } => "WordCraft",
     };
     egui::Window::new(tl!(title))
         .id(egui::Id::new(("dialog", title)))
@@ -742,6 +752,31 @@ fn body(app: &mut WordApp, ui: &mut Ui, d: &mut Dialog) -> bool {
             }
             let (ok, cancel) = buttons(ui, tl!("Close"));
             ok || cancel
+        }
+        Dialog::SaveChanges { name, .. } => {
+            ui.label(egui::RichText::new(crate::i18n::fmt(tl!("Do you want to save changes to {name}?"), &[("name", name)])).font(semibold(15.0)));
+            ui.label(tl!("Your changes will be lost if you don't save them."));
+            let mut answer = None;
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button(tl!("Cancel")).clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        answer = Some("cancel");
+                    }
+                    if ui.button(tl!("Don't Save")).clicked() {
+                        answer = Some("dontSave");
+                    }
+                    let save = ui.add(egui::Button::new(egui::RichText::new(tl!("Save")).color(egui::Color32::WHITE)).fill(crate::theme::APP_COLOR));
+                    if save.clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        answer = Some("save");
+                    }
+                });
+            });
+            let Some(answer) = answer else { return false };
+            // `ui.saveChanges` reads the prompt from `app.dialog`, which `show` has taken out.
+            app.dialog = Some(d.clone());
+            let _ = app.run("ui.saveChanges", json!({"answer": answer}));
+            true
         }
     }
 }

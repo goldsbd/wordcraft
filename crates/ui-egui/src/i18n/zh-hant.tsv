@@ -184,6 +184,8 @@
 	Distribute Rows	平均分配列高
 	Distributed	分散對齊
 	Do Not Show in TOC	不在目錄中顯示
+	Do you want to save changes to {name}?	是否儲存對 {name} 的變更？
+	Don't Save	不儲存
 	Document End	文件結尾
 	Document Formatting	文件格式設定
 	Document Property	文件摘要資訊
@@ -772,3 +774,4 @@
 	📂  Browse…	📂  瀏覽…
 	{words} words	{words} 個字
 	{selected} of {words} words	{selected}/{words} 個字
+	Your changes will be lost if you don't save them.	如果不儲存，您的變更將會遺失。

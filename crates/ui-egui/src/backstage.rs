@@ -57,7 +57,9 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
                         "save" => {
                             let _ = app.run("file.save", json!({}));
                         }
-                        "saveAs" => app.save_as_dialog(),
+                        "saveAs" => {
+                            app.save_as_dialog();
+                        }
                         "open" => {
                             app.ui.backstage_page = id.into();
                         }

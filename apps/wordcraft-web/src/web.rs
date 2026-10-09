@@ -1,4 +1,8 @@
-//! The browser shell: web `Services`, drag-and-drop, and the eframe web runner.
+//! The browser shell: web `Services`, drag-and-drop, the unsaved-changes guard and the eframe
+//! web runner.
+
+use std::cell::Cell;
+use std::rc::Rc;
 
 use wasm_bindgen::JsCast as _;
 use wordcraft_engine::Session;
@@ -20,6 +24,10 @@ pub fn start() {
             log::error!("missing <canvas id=\"{CANVAS_ID}\">");
             return;
         };
+        let dirty = Rc::new(Cell::new(false));
+        if let Err(e) = guard_unload(dirty.clone()) {
+            log::error!("no unsaved-changes guard: {e}");
+        }
         let mut options = eframe::WebOptions::default();
         if query().contains("webgl")
             && let eframe::egui_wgpu::WgpuSetup::CreateNew(create) = &mut options.wgpu_options.wgpu_setup
@@ -38,7 +46,7 @@ pub fn start() {
                     let doc = if query().contains("sample") { wordcraft_engine::sample::sample_document() } else { wordcraft_doc::Document::new() };
                     let mut app = WordApp::new(Session::new(doc), services(inbox.clone(), cc.egui_ctx.clone()));
                     app.autosave = false;
-                    Ok(Box::new(WebShell { app, inbox }))
+                    Ok(Box::new(WebShell { app, inbox, dirty }))
                 }),
             )
             .await;
@@ -60,6 +68,8 @@ fn query() -> String {
 struct WebShell {
     app: WordApp,
     inbox: Inbox,
+    /// Whether the document has unsaved changes, for the `beforeunload` guard.
+    dirty: Rc<Cell<bool>>,
 }
 
 impl eframe::App for WebShell {
@@ -80,6 +90,7 @@ impl eframe::App for WebShell {
             });
         }
         self.app.logic(ctx);
+        self.dirty.set(self.app.session.dirty);
     }
 
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
@@ -121,6 +132,23 @@ fn services(inbox: Inbox, ctx: egui::Context) -> Services {
         inbox: Some(inbox),
         ..Default::default()
     }
+}
+
+/// Closing, reloading or leaving the tab with unsaved changes asks first. Browsers show their own
+/// confirmation (a page can only ask for it), so there is no Save button: Cancel, then File › Save.
+fn guard_unload(dirty: Rc<Cell<bool>>) -> Result<(), String> {
+    let window = web_sys::window().ok_or("no window")?;
+    let on_unload = wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::BeforeUnloadEvent)>::new(move |e: web_sys::BeforeUnloadEvent| {
+        if dirty.get() {
+            e.prevent_default();
+            // Older browsers ask only when `returnValue` is set.
+            e.set_return_value("unsaved changes");
+        }
+    });
+    window.add_event_listener_with_callback("beforeunload", on_unload.as_ref().unchecked_ref()).map_err(|e| format!("{e:?}"))?;
+    // The listener lives as long as the page.
+    on_unload.forget();
+    Ok(())
 }
 
 /// Trigger a browser download of `bytes` named after the last component of `path`.

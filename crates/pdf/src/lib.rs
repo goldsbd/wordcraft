@@ -83,9 +83,10 @@ impl Default for PdfOptions {
     }
 }
 
-/// Lay out `doc` and write it as PDF.
+/// Lay out `doc` and write it as PDF. Without markup the layout is the final text: tracked
+/// deletions are left out, as in Word's "No Markup" view.
 pub fn export(doc: &Document, opts: &PdfOptions) -> Result<Vec<u8>, PdfError> {
-    let lay = layout(doc, &mut LayoutCache::new(), &LayoutOptions::default());
+    let lay = layout(doc, &mut LayoutCache::new(), &LayoutOptions { hide_deleted: !opts.include_markup, ..Default::default() });
     export_layout(doc, &lay, opts)
 }
 

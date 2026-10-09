@@ -63,6 +63,35 @@ fn hit_and_caret_agree() {
 }
 
 #[test]
+fn deletions_leave_the_final_text_layout() {
+    // "Keep " + deleted "DELETEDTEXT " (5..17) + inserted "INSERTED".
+    let mut d = Document::from_text("Keep DELETEDTEXT INSERTED");
+    d.format_range(&Pos::body(0, 5), &Pos::body(0, 17), &|c| c.del = Some(0)).unwrap();
+    d.format_range(&Pos::body(0, 17), &Pos::body(0, 25), &|c| c.ins = Some(0)).unwrap();
+    let texts = |l: &DocLayout, markup: bool| -> (String, usize) {
+        let items = display::page_display(&d, &l.pages[0], &display::DisplayOptions { markup, ..Default::default() });
+        let text = items.iter().filter_map(|i| if let display::Draw::Glyphs { text, .. } = i { Some(text.as_str()) } else { None }).collect();
+        (text, items.iter().filter(|i| matches!(i, display::Draw::Line { .. })).count())
+    };
+    // Markup: the deletion is laid out and struck through, the insertion underlined.
+    let full = lay(&d);
+    assert_eq!(texts(&full, true), ("Keep DELETEDTEXT INSERTED".into(), 2));
+    // Without markup a full layout still never prints the deletion as plain text.
+    assert!(!texts(&full, false).0.contains("DELETED"));
+    // The final layout gives the deletion no width.
+    let fin = layout(&d, &mut LayoutCache::new(), &LayoutOptions { hide_deleted: true, ..Default::default() });
+    assert_eq!(texts(&fin, false), ("Keep INSERTED".into(), 0));
+    let at = |off| fin.caret(&Pos::body(0, off)).unwrap();
+    assert!((at(5).x - at(17).x).abs() < 0.01, "{:?} {:?}", at(5), at(17));
+    // Every offset maps to a caret, and clicks land outside the hidden text.
+    for off in 0..=25 {
+        let c = at(off);
+        let back = fin.hit(c.page, c.x + 0.1, c.top + c.height / 2.0, StoryRef::Body).unwrap();
+        assert!(back.off <= 5 || back.off >= 17, "off {off} hit {back:?}");
+    }
+}
+
+#[test]
 fn page_break_char_starts_new_page() {
     let mut d = Document::from_text("one");
     d.insert_text(&Pos::body(0, 3), "\u{000C}", &Default::default()).unwrap();
@@ -265,7 +294,7 @@ fn runs_differing_only_in_link_or_decoration_keep_their_own_style() {
 fn web_view_is_one_page() {
     let d = Document::from_text(&"text ".repeat(3000));
     let mut c = LayoutCache::new();
-    let l = layout(&d, &mut c, &LayoutOptions { view: ViewMode::Web, web_width: 800.0, show_hidden: false, proofing: false });
+    let l = layout(&d, &mut c, &LayoutOptions { view: ViewMode::Web, web_width: 800.0, show_hidden: false, hide_deleted: false, proofing: false });
     assert_eq!(l.pages.len(), 1);
     assert!(l.pages[0].h > 800.0);
 }

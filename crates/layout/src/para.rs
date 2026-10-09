@@ -148,6 +148,8 @@ pub struct ParaEnv<'a> {
     pub label: Option<(String, Level)>,
     pub fields: &'a FieldCtx,
     pub show_hidden: bool,
+    /// Leave tracked deletions out, like hidden text (the final, "No Markup" text).
+    pub hide_deleted: bool,
     /// Extra style applied to every run (table style conditional formatting), under direct formatting.
     pub table_chr: Option<&'a CharProps>,
     pub proofing: bool,
@@ -362,7 +364,7 @@ pub fn layout_para(p: &Paragraph, env: &ParaEnv) -> ParaLayout {
     for (range, props) in p.run_ranges() {
         let rc = resolve(props);
         let Some(text) = p.text.get(range.clone()) else { continue };
-        if rc.hidden && !b.env.show_hidden {
+        if (rc.hidden && !b.env.show_hidden) || (rc.del.is_some() && b.env.hide_deleted) {
             let si = b.style(&rc, None, false);
             let g = b.glyphs.len() as u32;
             for (i, c) in text.char_indices() {

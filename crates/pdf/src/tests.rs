@@ -205,6 +205,26 @@ fn hostile_documents_export() {
 }
 
 #[test]
+fn tracked_deletions_are_left_out_without_markup() {
+    use wordcraft_doc::{Revision, RevisionKind};
+    let mut d = Document::new();
+    d.revisions.push(Revision { kind: RevisionKind::Delete, author: "Ada".into(), date: String::new() });
+    d.revisions.push(Revision { kind: RevisionKind::Insert, author: "Ada".into(), date: String::new() });
+    let mut p = Paragraph::with_text("Keep ", CharProps::default());
+    let n = p.len();
+    p.insert_text(n, "DELETEDTEXT ", &CharProps { del: Some(0), ..Default::default() }).unwrap();
+    let n = p.len();
+    p.insert_text(n, "INSERTED", &CharProps { ins: Some(1), ..Default::default() }).unwrap();
+    d.body = vec![para_block(p)];
+    // The default export shows the final text, as Word's "No Markup" does.
+    let text = squash(&extract_text(&export(&d, &PdfOptions::default()).unwrap()).concat());
+    assert_eq!(text, "Keep INSERTED");
+    // With markup the deletion is still there (struck through).
+    let text = squash(&extract_text(&export(&d, &PdfOptions { include_markup: true, ..Default::default() }).unwrap()).concat());
+    assert_eq!(text, "Keep DELETEDTEXT INSERTED");
+}
+
+#[test]
 fn text_mapping_handles_ligatures_and_extras() {
     let d = Document::from_text("office affine");
     let lay = layout(&d, &mut LayoutCache::new(), &LayoutOptions::default());

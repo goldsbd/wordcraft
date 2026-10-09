@@ -479,11 +479,31 @@ pub fn layout_para(p: &Paragraph, env: &ParaEnv) -> ParaLayout {
             b.shape(s, range.start + seg, &rc, None);
         }
     }
-    // Break opportunities.
+    // Break opportunities, in the text as laid out: without markup, tracked deletions are left out,
+    // so a deleted space or soft hyphen is no place to break.
+    let deleted: Vec<std::ops::Range<usize>> =
+        if env.hide_deleted { p.run_ranges().filter(|(_, c)| c.del.is_some()).map(|(r, _)| r).collect() } else { Vec::new() };
+    // The text and, for each char of it, its end there and in `p.text`.
+    let (text, ends): (std::borrow::Cow<str>, Vec<(usize, usize)>) = if deleted.is_empty() {
+        (p.text.as_str().into(), Vec::new())
+    } else {
+        let (mut text, mut ends) = (String::new(), Vec::new());
+        for (i, c) in p.text.char_indices().filter(|(i, _)| !deleted.iter().any(|r| r.contains(i))) {
+            text.push(c);
+            ends.push((text.len(), i + c.len_utf8()));
+        }
+        (text.into(), ends)
+    };
     let mut opps = std::collections::HashSet::new();
-    for (i, o) in unicode_linebreak::linebreaks(&p.text) {
-        if o == unicode_linebreak::BreakOpportunity::Allowed || i < p.text.len() {
-            opps.insert(i);
+    for (i, o) in unicode_linebreak::linebreaks(&text) {
+        if o == unicode_linebreak::BreakOpportunity::Allowed || i < text.len() {
+            if deleted.is_empty() {
+                opps.insert(i);
+            } else if let Ok(k) = ends.binary_search_by_key(&i, |e| e.0)
+                && let Some((_, end)) = ends.get(k)
+            {
+                opps.insert(*end);
+            }
         }
     }
     for c in &mut b.clusters {

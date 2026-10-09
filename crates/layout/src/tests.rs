@@ -110,6 +110,24 @@ fn deleted_soft_hyphen_is_no_hyphenation_point_without_markup() {
 }
 
 #[test]
+fn deleted_text_adds_no_line_break_opportunity_without_markup() {
+    // "xx ab\u{ad}cdef" in a column where "xx ab-" and "abcdef" fit but "xx abcdef" does not; only
+    // the soft hyphen (5..7) is track-deleted.
+    let mut d = Document::from_text("xx ab\u{ad}cdef");
+    d.format_range(&Pos::body(0, 5), &Pos::body(0, 7), &|c| c.del = Some(0)).unwrap();
+    d.format_paragraphs(&Pos::body(0, 0), &Pos::body(0, 0), &|p| p.indent_right = Some(468.0 - 40.0)).unwrap();
+    let line_starts = |hide_deleted: bool| {
+        let l = layout(&d, &mut LayoutCache::new(), &LayoutOptions { hide_deleted, ..Default::default() });
+        let Some(Placed::Lines { para, .. }) = l.pages[0].items.iter().find(|i| matches!(i, Placed::Lines { .. })) else { panic!() };
+        para.lines.iter().map(|l| para.clusters.get(l.c0).map_or(usize::MAX, |c| c.start)).collect::<Vec<_>>()
+    };
+    // With markup the word breaks at the (deleted) soft hyphen.
+    assert_eq!(line_starts(false), vec![0, 7]);
+    // Final text: "abcdef" is one word, so the line breaks at the space before it.
+    assert_eq!(line_starts(true), vec![0, 3]);
+}
+
+#[test]
 fn page_break_char_starts_new_page() {
     let mut d = Document::from_text("one");
     d.insert_text(&Pos::body(0, 3), "\u{000C}", &Default::default()).unwrap();

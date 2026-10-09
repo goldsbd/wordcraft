@@ -111,8 +111,10 @@ impl Writer<'_> {
             w.empty(mark, &[]);
             w.raw("</w:r>");
         }
+        // Taken before the content so a nested story (a text box in the last entry) can't claim it.
+        let toc_end = std::mem::take(&mut self.toc_end_here);
         self.para_content(w, p, rels, depth);
-        if std::mem::take(&mut self.toc_end_here) {
+        if toc_end {
             w.raw(r#"<w:r><w:fldChar w:fldCharType="end"/></w:r>"#);
         }
         w.close("w:p");

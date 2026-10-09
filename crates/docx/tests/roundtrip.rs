@@ -513,6 +513,45 @@ fn toc_field_wraps_its_entries() {
     assert_eq!(ps[1].props.style.as_deref(), Some("TOC1"));
 }
 
+/// The TOC field's end belongs to the last entry's own paragraph, even when that entry holds a
+/// text box: the box's paragraphs are written first and must not close the field inside the box.
+#[test]
+fn toc_field_end_skips_nested_stories() {
+    let mut d = Document::new();
+    let story = d.add_part(PartKind::TextBox, vec![para_block(Paragraph::with_text("Boxed", CharProps::default()))]);
+    let mut head = Paragraph::with_text("Contents", CharProps::default()).styled("TOCHeading");
+    let end = head.len();
+    head.insert_object(
+        end,
+        InlineObject::Field { instr: "TOC \\o \"1-1\" \\h \\z \\u".into(), result: String::new(), locked: false },
+        &CharProps::default(),
+    )
+    .unwrap();
+    let mut last = Paragraph::with_text("Detail\t2", CharProps::default()).styled("TOC1");
+    let tb = InlineObject::Shape {
+        kind: ShapeKind::TextBox,
+        w: 72.0,
+        h: 36.0,
+        fill: None,
+        stroke: None,
+        stroke_width: 0.0,
+        float: Float::default(),
+        story: Some(story),
+    };
+    let end = last.len();
+    last.insert_object(end, tb, &CharProps::default()).unwrap();
+    d.body = vec![para_block(head), para_block(last), para_block(Paragraph::with_text("Body", CharProps::default()))];
+
+    let bytes = wordcraft_docx::write(&d).expect("write");
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).unwrap();
+    let mut xml = String::new();
+    std::io::Read::read_to_string(&mut zip.by_name("word/document.xml").unwrap(), &mut xml).unwrap();
+    let ends: Vec<usize> = xml.match_indices(r#"fldCharType="end""#).map(|(i, _)| i).collect();
+    assert_eq!(ends.len(), 1, "{xml}");
+    assert!(ends[0] > xml.rfind("</w:txbxContent>").expect("text box written"), "field closed inside the text box: {xml}");
+    assert!(ends[0] < xml.find("</w:sdt>").unwrap(), "{xml}");
+}
+
 #[test]
 fn tracked_changes_round_trip() {
     let mut d = Document::new();

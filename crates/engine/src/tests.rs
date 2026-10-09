@@ -248,6 +248,51 @@ fn replace_under_track_changes_skips_deleted_text() {
 }
 
 #[test]
+fn find_reads_the_text_around_tracked_deletions() {
+    // `edits` are (start, end) byte ranges deleted with Track Changes on, last first.
+    fn tracked(text: &str, edits: &[(usize, usize)]) -> Session {
+        let mut s = self::s();
+        run(&mut s, "document.setText", json!({"text": text}));
+        run(&mut s, "review.trackChanges", json!({"value": true}));
+        for (a, b) in edits {
+            run(&mut s, "select.range", json!({"anchor": {"block": 0, "off": a}, "focus": {"block": 0, "off": b}}));
+            run(&mut s, "text.delete", json!({}));
+        }
+        assert_eq!(text, self::text(&s), "the deletions are tracked, not applied");
+        s
+    }
+    let offs = |r: &serde_json::Value| -> Vec<(u64, u64)> {
+        r["matches"].as_array().unwrap().iter().map(|m| (m["start"]["off"].as_u64().unwrap(), m["end"]["off"].as_u64().unwrap())).collect()
+    };
+
+    // "aaa" with the first "a" deleted reads "aa": the rejected raw match 0..2 must not hide
+    // the live one at 1..3.
+    let mut s = tracked("aaa", &[(0, 1)]);
+    assert_eq!(offs(&run(&mut s, "edit.find", json!({"text": "aa"}))), [(1, 3)]);
+    assert_eq!(offs(&run(&mut s, "edit.find", json!({"text": "^a", "regex": true}))), [(1, 2)]);
+    assert_eq!(run(&mut s, "edit.replaceAll", json!({"text": "aa", "with": "b"}))["replaced"], 1);
+
+    // Whole words follow the live text: deleting the space joins "cat" and "fish"...
+    let mut s = tracked("cat fish", &[(3, 4)]);
+    assert_eq!(run(&mut s, "edit.find", json!({"text": "fish", "wholeWord": true}))["count"], 0);
+    assert_eq!(run(&mut s, "edit.find", json!({"text": "catfish", "wholeWord": true}))["count"], 0, "a match may not span a deletion");
+    assert_eq!(run(&mut s, "edit.find", json!({"text": "fish", "wholeWord": false}))["count"], 1);
+    // ...and deleting the "X" leaves "fish" a word of its own.
+    let mut s = tracked("cat Xfish", &[(4, 5)]);
+    assert_eq!(offs(&run(&mut s, "edit.find", json!({"text": "FISH", "wholeWord": true}))), [(5, 9)]);
+    assert_eq!(run(&mut s, "edit.find", json!({"text": "FISH", "wholeWord": true, "matchCase": true}))["count"], 0);
+
+    // Replace and the Find Next/Previous steps agree with Find.
+    let mut s = tracked("aaa aaa", &[(4, 5), (0, 1)]);
+    run(&mut s, "caret.docStart", json!({}));
+    assert_eq!(run(&mut s, "edit.find", json!({"text": "aa"}))["count"], 2);
+    assert_eq!(run(&mut s, "edit.findNext", json!({}))["index"], 1);
+    assert_eq!(run(&mut s, "edit.findPrevious", json!({}))["index"], 0);
+    let r = run(&mut s, "edit.replace", json!({"text": "aa", "with": "b"}));
+    assert_eq!(r["remaining"], 1);
+}
+
+#[test]
 fn clipboard_round_trip() {
     let mut s = s();
     run(&mut s, "document.setText", json!({"text": "alpha beta\ngamma"}));

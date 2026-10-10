@@ -34,6 +34,7 @@
 	Alt Text	代替テキスト
 	Apply Character Style	文字スタイルを適用
 	Apply Style	スタイルを適用
+	Apply Styles	スタイルを選んで適用
 	Arrange	配置
 	Arrange\nAll	整列
 	Arrow	矢印
@@ -51,6 +52,8 @@
 	AutoSave	自動保存
 	AutoSave documents you have saved in WordCraft	WordCraft で保存した文書を自動保存する
 	AutoSave failed: {error}. Save the document to turn AutoSave back on.	自動保存できませんでした: {error}。文書を保存し直すと、自動保存が再開します。
+	Dark page (white text on black)	ダーク ページ (黒地に白い文字)
+	Show documents with their colours inverted, like View › Switch Modes. Saving, printing and PDFs are unchanged.	表示 › モードの切り替えと同様に、文書の色を反転して表示します。保存、印刷、PDF は変わりません。
 	AutoSave saves every change to the file (needs a saved document)	自動保存は変更のたびにファイルへ保存します（保存済みの文書が必要です）
 	AutoText	定型句
 	Backspace	Backspace
@@ -97,6 +100,7 @@
 	Character Scale	文字の拡大/縮小
 	Character Shading	文字の網かけ
 	Character Spacing	文字間隔
+	Character Border	文字の罫線
 	Characters (no spaces)	文字数（スペースを含めない）
 	Characters (with spaces)	文字数（スペースを含める）
 	Chart	グラフ
@@ -441,6 +445,7 @@
 	OK	OK
 	One	1 段
 	One Page	1 ページ
+	Only web (http, https) and email (mailto) links can be followed	開けるのは Web（http、https）とメール（mailto）のリンクだけです
 	Open	開く
 	OpenDocument Text (*.odt)	OpenDocument テキスト (*.odt)
 	Optional Hyphen	任意指定のハイフン
@@ -777,3 +782,5 @@
 	{words} words	{words} 語
 	{selected} of {words} words	{selected}/{words} 語
 	Your changes will be lost if you don't save them.	保存しないと、変更内容は失われます。
+	Scroll ribbon left	リボンを左にスクロール
+	Scroll ribbon right	リボンを右にスクロール

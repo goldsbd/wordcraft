@@ -255,7 +255,7 @@ impl Session {
     /// Record `doc`/`sel` as their own undo step after the fact and close the typing group, so
     /// Undo right after an automatic change (AutoFormat, AutoCorrect) reverts only that change.
     pub fn push_undo(&mut self, label: &str, doc: Document, sel: Selection) {
-        self.history.push(Undo { label: label.to_string(), doc, sel });
+        self.history.push(Arc::new(Undo { label: label.to_string(), doc, sel }));
         if self.history.len() > MAX_UNDO {
             self.history.remove(0);
         }

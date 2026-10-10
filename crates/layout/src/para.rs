@@ -376,9 +376,21 @@ pub fn layout_para(p: &Paragraph, env: &ParaEnv) -> ParaLayout {
             left.push(range.clone());
             let si = b.style(&rc, None, false);
             let g = b.glyphs.len() as u32;
+            // Word still prints the note of a hidden reference mark (and numbers it); a deleted
+            // reference is gone from the final text, note and all.
+            let keeps_notes = !(rc.del.is_some() && b.env.hide_deleted);
             for (i, c) in text.char_indices() {
+                let mut note = None;
                 if c == OBJ {
+                    if let Some(InlineObject::NoteRef { id, .. }) = p.objects.get(obj_index)
+                        && keeps_notes
+                    {
+                        note = Some(*id);
+                    }
                     obj_index += 1;
+                }
+                if let Some(id) = note {
+                    notes.push((b.clusters.len(), id));
                 }
                 b.clusters.push(Cluster {
                     start: range.start + i,

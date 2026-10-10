@@ -500,9 +500,10 @@ impl Exporter<'_> {
     }
 
     /// A heading's text for bookmarks and tags: what the pages show, so tracked deletions only
-    /// with markup.
+    /// with markup, and never hidden text (the PDF does not print it).
     fn title_text(&self, p: &wordcraft_doc::Paragraph) -> String {
-        if self.opts.include_markup { p.plain_text() } else { p.final_text() }
+        let style = p.props.style.as_deref();
+        p.text_where(|c| (self.opts.include_markup || c.del.is_none()) && !self.doc.styles.resolve_char(style, c).hidden)
     }
 
     /// The structure entry for a paragraph (created on first sight, in reading order).

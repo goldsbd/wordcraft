@@ -251,6 +251,43 @@ fn deleted_heading_text_stays_out_of_bookmarks_and_tags() {
 }
 
 #[test]
+fn hidden_heading_text_stays_out_of_bookmarks_and_tags() {
+    let mut d = Document::new();
+    // Hidden text both directly and through a character style.
+    d.styles.upsert(wordcraft_doc::Style {
+        id: "Secret".into(),
+        name: "Secret".into(),
+        kind: wordcraft_doc::StyleKind::Character,
+        chr: CharProps { hidden: Some(true), ..Default::default() },
+        ..Default::default()
+    });
+    let hidden = CharProps { hidden: Some(true), ..Default::default() };
+    // "Intro SECRET Part" with "SECRET " hidden, a heading hidden as a whole, and one hidden by style.
+    let mut h = Paragraph::with_text("Intro ", CharProps::default()).styled("Heading1");
+    let n = h.len();
+    h.insert_text(n, "SECRET ", &hidden).unwrap();
+    let n = h.len();
+    h.insert_text(n, "Part", &CharProps::default()).unwrap();
+    let gone = Paragraph::with_text("GONE", hidden.clone()).styled("Heading1");
+    let styled = Paragraph::with_text("STYLED", CharProps { style: Some("Secret".into()), ..Default::default() }).styled("Heading1");
+    d.body = vec![
+        para_block(h),
+        para_block(Paragraph::with_text("Body text", CharProps::default())),
+        para_block(gone),
+        para_block(styled),
+        para_block(Paragraph::with_text("More text", CharProps::default())),
+    ];
+    let raw = |opts: PdfOptions| String::from_utf8_lossy(&export(&d, &PdfOptions { compress: false, ..opts }).unwrap()).into_owned();
+    // The PDF never prints hidden text, with or without markup, so neither do bookmarks or tags.
+    for (tagged, include_markup) in [(false, false), (true, false), (true, true)] {
+        let pdf = raw(PdfOptions { tagged, include_markup, ..Default::default() });
+        let what = format!("tagged {tagged} markup {include_markup}");
+        assert!(!pdf.contains("SECRET") && !pdf.contains("GONE") && !pdf.contains("STYLED"), "{what}: hidden heading text in the PDF");
+        assert!(pdf.contains("/Outlines") && pdf.contains("Intro Part"), "{what}: no bookmark for the heading");
+    }
+}
+
+#[test]
 fn text_mapping_handles_ligatures_and_extras() {
     let d = Document::from_text("office affine");
     let lay = layout(&d, &mut LayoutCache::new(), &LayoutOptions::default());

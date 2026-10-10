@@ -167,6 +167,11 @@ fn hidden_text_adds_no_line_break_opportunity_when_not_shown() {
 
 /// How much longer laying out `doc(4n)` takes than `doc(n)` (fastest of three each, after a
 /// warm-up): ~4 when linear, ~16 when quadratic, whatever the machine.
+/// How much bigger the second document is in the linear-time tests. At 8x a linear layout takes
+/// about 8x as long and a quadratic one about 64x, so a limit of 24x stays far from both, however
+/// busy the machine running the tests is.
+const SCALE: usize = 8;
+
 fn layout_time_ratio(doc: impl Fn(usize) -> Document, n: usize, opts: &LayoutOptions) -> (f64, f64, f64) {
     let fastest = |d: &Document| {
         (0..3)
@@ -177,10 +182,10 @@ fn layout_time_ratio(doc: impl Fn(usize) -> Document, n: usize, opts: &LayoutOpt
             })
             .fold(f64::INFINITY, f64::min)
     };
-    let (small, big) = (doc(n), doc(4 * n));
+    let (small, big) = (doc(n), doc(SCALE * n));
     layout(&small, &mut LayoutCache::new(), opts);
-    let (t1, t4) = (fastest(&small), fastest(&big));
-    (t1, t4, t4 / t1.max(1e-9))
+    let (t1, tk) = (fastest(&small), fastest(&big));
+    (t1, tk, tk / t1.max(1e-9))
 }
 
 #[test]
@@ -196,9 +201,9 @@ fn hidden_separators_with_automatic_hyphenation_lay_out_in_linear_time() {
         }
         d
     };
-    let (t1, t4, ratio) = layout_time_ratio(doc, 800, &LayoutOptions::default());
-    eprintln!("t(n) {t1:.4} s, t(4n) {t4:.4} s, ratio {ratio:.1}");
-    assert!(ratio < 8.0, "4x the text took {ratio:.1}x the time ({t1:.4} s → {t4:.4} s): not linear");
+    let (t1, tk, ratio) = layout_time_ratio(doc, 800, &LayoutOptions::default());
+    eprintln!("t(n) {t1:.4} s, t(8n) {tk:.4} s, ratio {ratio:.1}");
+    assert!(ratio < 24.0, "8x the text took {ratio:.1}x the time ({t1:.4} s → {tk:.4} s): not linear");
 }
 
 #[test]
@@ -247,9 +252,9 @@ fn many_hidden_float_anchors_lay_out_in_linear_time() {
         l.pages.iter().flat_map(|p| p.items.iter()).filter(|i| matches!(i, Placed::Shape { .. })).count()
     };
     assert_eq!((shapes(false), shapes(true)), (0, 50));
-    let (t1, t4, ratio) = layout_time_ratio(doc, 10_000, &LayoutOptions::default());
-    eprintln!("t(n) {t1:.4} s, t(4n) {t4:.4} s, ratio {ratio:.1}");
-    assert!(ratio < 8.0, "4x the anchors took {ratio:.1}x the time ({t1:.4} s → {t4:.4} s): not linear");
+    let (t1, tk, ratio) = layout_time_ratio(doc, 10_000, &LayoutOptions::default());
+    eprintln!("t(n) {t1:.4} s, t(8n) {tk:.4} s, ratio {ratio:.1}");
+    assert!(ratio < 24.0, "8x the anchors took {ratio:.1}x the time ({t1:.4} s → {tk:.4} s): not linear");
 }
 
 #[test]
@@ -1570,9 +1575,9 @@ fn unequal_formats_lay_out_in_linear_time() {
         d.body = vec![wordcraft_doc::para_block(p)];
         d
     };
-    let (t1, t4, ratio) = layout_time_ratio(doc, 5_000, &LayoutOptions::default());
-    eprintln!("t(n) {t1:.4} s, t(4n) {t4:.4} s, ratio {ratio:.1}");
-    assert!(ratio < 8.0, "4x the runs took {ratio:.1}x the time ({t1:.4} s → {t4:.4} s): not linear");
+    let (t1, tk, ratio) = layout_time_ratio(doc, 5_000, &LayoutOptions::default());
+    eprintln!("t(n) {t1:.4} s, t(8n) {tk:.4} s, ratio {ratio:.1}");
+    assert!(ratio < 24.0, "8x the runs took {ratio:.1}x the time ({t1:.4} s → {tk:.4} s): not linear");
 }
 
 #[test]

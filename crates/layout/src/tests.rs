@@ -1574,3 +1574,42 @@ fn unequal_formats_lay_out_in_linear_time() {
     eprintln!("t(n) {t1:.4} s, t(4n) {t4:.4} s, ratio {ratio:.1}");
     assert!(ratio < 8.0, "4x the runs took {ratio:.1}x the time ({t1:.4} s → {t4:.4} s): not linear");
 }
+
+#[test]
+fn hidden_float_in_a_table_cell_takes_no_room() {
+    use wordcraft_doc::para::{Anchor, Float, Wrap};
+    // A square-wrapped shape anchored in hidden text inside a table cell, beside wrapping text.
+    let mut d = Document::from_text("Body text.");
+    let mut t = Table::new(1, 2, 468.0);
+    let mut cp = wordcraft_doc::Paragraph::with_text(&"Cell words wrap around it. ".repeat(8), Default::default());
+    let f = Float { wrap: Wrap::Square, h_rel: Anchor::Column, v_rel: Anchor::Paragraph, dist: 9.0, ..Default::default() };
+    let hidden = wordcraft_doc::CharProps { hidden: Some(true), ..Default::default() };
+    cp.insert_object(0, rect_shape(60.0, 40.0, f), &hidden).unwrap();
+    t.rows[0].cells[0].blocks = vec![wordcraft_doc::para_block(cp)];
+    d.insert_block(StoryRef::Body, &Path::top(1), wordcraft_doc::Block::Table(t)).unwrap();
+    // (shapes placed, the cell text's widest first-line indent)
+    let run = |show_hidden: bool| {
+        let l = layout(&d, &mut LayoutCache::new(), &LayoutOptions { show_hidden, ..Default::default() });
+        let items = &l.pages[0].items;
+        let left = items
+            .iter()
+            .filter_map(|i| if let Placed::Lines { para, .. } = i { para.lines.first().map(|l| l.left) } else { None })
+            .fold(0.0f32, f32::max);
+        (shapes(items).len(), left)
+    };
+    let (n, left) = run(true);
+    assert!(n == 1 && left >= 60.0, "shown: placed and wrapped around ({n}, {left})");
+    assert_eq!(run(false), (0, 0.0), "hidden: not placed, no wrap area");
+}
+
+#[test]
+fn objects_left_out_through_the_table_style_formatting() {
+    // The table style's character formatting sits under the runs' own, as the cell is laid out.
+    let mut p = wordcraft_doc::Paragraph::with_text("ab", Default::default());
+    p.insert_object(1, rect_shape(10.0, 10.0, Default::default()), &Default::default()).unwrap();
+    let d = Document::from_text("");
+    let hidden = wordcraft_doc::CharProps { hidden: Some(true), ..Default::default() };
+    assert!(!left_out_objects(&d, &p, None, false, false)(0));
+    assert!(left_out_objects(&d, &p, Some(&hidden), false, false)(0));
+    assert!(!left_out_objects(&d, &p, Some(&hidden), true, false)(0), "hidden text shown");
+}

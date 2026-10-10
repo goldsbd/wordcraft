@@ -299,13 +299,20 @@ impl Ctx<'_> {
 }
 
 /// Which of `p`'s objects (by index) the layout leaves out ([`para::left_out`]): anchored in hidden
-/// text unless `show_hidden`, or in a tracked deletion with `hide_deleted`.
-fn left_out_objects(doc: &Document, p: &Paragraph, show_hidden: bool, hide_deleted: bool) -> impl Fn(usize) -> bool {
+/// text unless `show_hidden`, or in a tracked deletion with `hide_deleted`. `table_chr` is the
+/// table style's character formatting under the runs' own, as the paragraph is laid out with.
+fn left_out_objects(doc: &Document, p: &Paragraph, table_chr: Option<&CharProps>, show_hidden: bool, hide_deleted: bool) -> impl Fn(usize) -> bool {
     let mut left = Vec::new();
     // Nothing can be left out with hidden text shown and markup on.
     if (hide_deleted || !show_hidden) && !p.objects.is_empty() {
         let style = p.props.style.as_deref();
-        let is_left = |c: &CharProps| para::left_out(&doc.styles.resolve_char(style, c), show_hidden, hide_deleted);
+        let is_left = |c: &CharProps| {
+            let rc = match table_chr {
+                Some(t) => doc.styles.resolve_char(style, &t.clone().overlaid(c)),
+                None => doc.styles.resolve_char(style, c),
+            };
+            para::left_out(&rc, show_hidden, hide_deleted)
+        };
         // Runs and objects are both in order: one walk finds each object's run (past the last run,
         // the paragraph mark, as `props_of_char` gives), resolving a run's formatting only once.
         let mut runs = p.run_ranges().peekable();
@@ -337,7 +344,7 @@ fn note_numbers(doc: &Document, hide_deleted: bool) -> HashMap<u32, u32> {
     for path in doc.para_paths(StoryRef::Body) {
         if let Some(p) = doc.para(StoryRef::Body, &path) {
             // A hidden reference mark still takes its number, as in Word; a deleted one does not.
-            let deleted = left_out_objects(doc, p, true, hide_deleted);
+            let deleted = left_out_objects(doc, p, None, true, hide_deleted);
             for (k, o) in p.objects.iter().enumerate() {
                 if deleted(k) {
                     continue;
@@ -401,7 +408,7 @@ fn layout_box(
                 // Floating objects anchored here: place them, then wrap the text around them.
                 // One left out of the layout (hidden, or deleted in the final text) takes no room.
                 let mut floats = Vec::new();
-                let left_out = left_out_objects(ctx.doc, p, ctx.opts.show_hidden, ctx.opts.hide_deleted);
+                let left_out = left_out_objects(ctx.doc, p, table_chr, ctx.opts.show_hidden, ctx.opts.hide_deleted);
                 for (oi, o) in p.objects.iter().enumerate() {
                     let Some((w, h, float)) = floating(o) else { continue };
                     if left_out(oi) {
@@ -955,7 +962,7 @@ fn anchor_floats(
         let frame = PageFrame { sect: pb.sect, origin: (0.0, 0.0) };
         // An object left out of the layout (hidden, or deleted in the final text) is not placed, so
         // it takes no room either.
-        let left_out = left_out_objects(ctx.doc, p, ctx.opts.show_hidden, ctx.opts.hide_deleted);
+        let left_out = left_out_objects(ctx.doc, p, None, ctx.opts.show_hidden, ctx.opts.hide_deleted);
         for (oi, o) in p.objects.iter().enumerate() {
             let Some((w, h, float)) = floating(o) else { continue };
             if left_out(oi) {

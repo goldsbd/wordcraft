@@ -165,6 +165,42 @@ fn hidden_text_adds_no_line_break_opportunity_when_not_shown() {
     }
 }
 
+/// How much longer laying out `doc(4n)` takes than `doc(n)` (fastest of three each, after a
+/// warm-up): ~4 when linear, ~16 when quadratic, whatever the machine.
+fn layout_time_ratio(doc: impl Fn(usize) -> Document, n: usize, opts: &LayoutOptions) -> (f64, f64, f64) {
+    let fastest = |d: &Document| {
+        (0..3)
+            .map(|_| {
+                let t = std::time::Instant::now();
+                layout(d, &mut LayoutCache::new(), opts);
+                t.elapsed().as_secs_f64()
+            })
+            .fold(f64::INFINITY, f64::min)
+    };
+    let (small, big) = (doc(n), doc(4 * n));
+    layout(&small, &mut LayoutCache::new(), opts);
+    let (t1, t4) = (fastest(&small), fastest(&big));
+    (t1, t4, t4 / t1.max(1e-9))
+}
+
+#[test]
+fn hidden_separators_with_automatic_hyphenation_lay_out_in_linear_time() {
+    // "hyphenation " n times with every space hidden: one joined word of 11n letters reaches the
+    // hyphenator, whose limit checks once rescanned the word for every candidate point.
+    let doc = |n: usize| {
+        let mut d = Document::from_text(&"hyphenation ".repeat(n));
+        d.settings.auto_hyphenation = true;
+        for k in 0..n {
+            let at = 12 * k + 11;
+            d.format_range(&Pos::body(0, at), &Pos::body(0, at + 1), &|c| c.hidden = Some(true)).unwrap();
+        }
+        d
+    };
+    let (t1, t4, ratio) = layout_time_ratio(doc, 800, &LayoutOptions::default());
+    eprintln!("t(n) {t1:.4} s, t(4n) {t4:.4} s, ratio {ratio:.1}");
+    assert!(ratio < 8.0, "4x the text took {ratio:.1}x the time ({t1:.4} s → {t4:.4} s): not linear");
+}
+
 #[test]
 fn fragmented_hidden_text_lays_out_like_the_visible_text() {
     // Visible words with a hidden multi-byte char after every visible one, formatted in alternating

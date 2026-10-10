@@ -75,6 +75,8 @@ pub struct UiState {
     pub window: Option<window_geometry::WindowGeometry>,
     /// Interface language: `auto` (follow the system) or a code from [`i18n::LANGUAGES`].
     pub language: String,
+    /// View › Switch Modes: show pages dark (white text on black), kept between runs.
+    pub dark_page: bool,
 }
 
 impl Default for UiState {
@@ -91,6 +93,7 @@ impl Default for UiState {
             author: String::new(),
             window: None,
             language: i18n::AUTO.into(),
+            dark_page: false,
         }
     }
 }
@@ -104,6 +107,8 @@ pub struct WordApp {
     pub dialog: Option<dialogs::Dialog>,
     pub status_msg: Option<(String, f64)>,
     pub previews: previews::Previews,
+    /// Media key of the picture a pending Change Picture replaces (#147).
+    pub change_picture_target: Option<String>,
     /// macOS: the window has no title bar; leave room for the traffic lights.
     pub integrated_titlebar: bool,
     control_rx: Option<std::sync::mpsc::Receiver<ControlRequest>>,
@@ -117,6 +122,8 @@ pub struct WordApp {
     fonts_frames: u32,
     applied_dark: Option<bool>,
     pub frame_ms: f64,
+    /// The window title last sent; a viewport command schedules a repaint, so only send changes.
+    sent_title: String,
     pub quit_requested: bool,
     pub autosave: bool,
     pub word_count: (u64, usize),
@@ -167,11 +174,13 @@ impl WordApp {
             fonts_frames: 0,
             applied_dark: None,
             frame_ms: 0.0,
+            sent_title: String::new(),
             quit_requested: false,
             autosave: true,
             word_count: (0, 0),
             last_autosave: 0.0,
             autosave_path: None,
+            change_picture_target: None,
         }
     }
 
@@ -184,6 +193,7 @@ impl WordApp {
     pub fn prefs(&self) -> UiState {
         let mut ui = self.ui.clone();
         ui.author = self.session.author.clone();
+        ui.dark_page = self.session.view.dark_mode;
         ui
     }
 
@@ -196,6 +206,7 @@ impl WordApp {
         if !author.trim().is_empty() {
             self.session.author = author;
         }
+        self.session.view.dark_mode = self.ui.dark_page;
     }
 
     /// Run a command the user asked for (ribbon, shortcut, Backstage, file drop). New, Open,
@@ -214,12 +225,16 @@ impl WordApp {
     /// Run a command for a script or an agent (control channel, MCP bridge): never asks first.
     /// UI-level commands (`ui.*`) are handled here, the rest by the engine.
     pub fn execute(&mut self, id: &str, params: Value) -> Result<Value, String> {
+        // A pending Change Picture only survives until the next action (#147).
+        if !matches!(id, "ui.changePicture" | "picture.change" | "insert.picture") {
+            self.change_picture_target = None;
+        }
         if let Some(r) = self.ui_command(id, &params) {
             return r;
         }
         // Web: saving and exporting become downloads.
         if self.services.download.is_some() && matches!(id, "file.save" | "file.saveAs" | "file.exportPdf" | "file.exportPng") {
-            let name = params.get("path").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| format!("{}.docx", self.title_stem()));
+            let name = params.get("path").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| self.default_save_name());
             let name = if id == "file.exportPdf" && !name.ends_with(".pdf") { format!("{name}.pdf") } else { name };
             let bytes = wordcraft_engine::io::save_bytes(&name, &self.session.doc)?;
             if let Some(d) = &self.services.download
@@ -387,6 +402,14 @@ impl WordApp {
                 self.dialog = None;
                 json!({})
             }
+            "ui.changePicture" => {
+                let Some(media) = self.selected_picture_media() else {
+                    return Some(Err("select a picture first".into()));
+                };
+                self.change_picture_target = Some(media);
+                self.pick_picture();
+                json!({"pending": self.change_picture_target.is_some()})
+            }
             "ui.collapseRibbon" => {
                 self.ui.ribbon_collapsed = !self.ui.ribbon_collapsed;
                 json!({"collapsed": self.ui.ribbon_collapsed})
@@ -445,9 +468,38 @@ impl WordApp {
 
     /// Ask where to save, then save there. True once the document is written.
     pub fn save_as_dialog(&mut self) -> bool {
-        let name = self.title_stem() + ".docx";
+        let name = self.default_save_name();
         let picked = self.services.pick_save.as_ref().and_then(|f| f(&name));
         picked.is_some_and(|path| self.run("file.save", json!({"path": path})).is_ok_and(|v| v.get("saved").and_then(Value::as_bool) == Some(true)))
+    }
+
+    /// Media key of the selected picture, if any.
+    pub(crate) fn selected_picture_media(&self) -> Option<String> {
+        match wordcraft_engine::cmd::objects::selected(&self.session) {
+            Some((_, wordcraft_doc::para::InlineObject::Image { media, .. })) => Some(media),
+            _ => None,
+        }
+    }
+
+    /// A picked image replaces the pending Change Picture target, else it is inserted.
+    fn insert_or_change_picture(&mut self, params: Value) -> Result<Value, String> {
+        let target = std::mem::take(&mut self.change_picture_target);
+        match (target, self.selected_picture_media()) {
+            (Some(t), Some(m)) if t == m => self.run("picture.change", params),
+            _ => self.run("insert.picture", params),
+        }
+    }
+
+    /// Drop a pending Change Picture once the selection moved to another picture.
+    fn clear_stale_change_picture(&mut self) {
+        let stale = match (&self.change_picture_target, self.selected_picture_media()) {
+            (Some(t), Some(m)) => t != &m,
+            (Some(_), None) => true,
+            _ => false,
+        };
+        if stale {
+            self.change_picture_target = None;
+        }
     }
 
     fn pick_picture(&mut self) {
@@ -457,7 +509,19 @@ impl WordApp {
         }
         let picked = self.services.pick_open.as_ref().and_then(|f| f("picture"));
         if let Some(path) = picked {
-            let _ = self.run("insert.picture", json!({"path": path}));
+            let _ = self.insert_or_change_picture(json!({"path": path}));
+        } else {
+            self.change_picture_target = None;
+        }
+    }
+
+    /// The name Save suggests: the open file's own Word format (so a .docm keeps its macros),
+    /// otherwise .docx.
+    fn default_save_name(&self) -> String {
+        let ext = self.session.path.as_ref().and_then(|p| p.extension()).map(|e| e.to_string_lossy().to_string());
+        match ext {
+            Some(e) if wordcraft_engine::io::is_word_package(&e) => format!("{}.{e}", self.title_stem()),
+            _ => format!("{}.docx", self.title_stem()),
         }
     }
 
@@ -494,6 +558,7 @@ impl WordApp {
             self.applied_dark = Some(dark);
         }
         self.drain_control(ctx);
+        self.clear_stale_change_picture();
         self.drain_inbox();
         self.autosave_tick(now_ms());
         if self.autosaves() && self.session.dirty {
@@ -538,8 +603,7 @@ impl WordApp {
     fn autosave_tick(&mut self, now: f64) {
         if self.autosaves() && self.session.dirty && now - self.last_autosave > 2500.0 && now - self.canvas.caret_visible_since > 1500.0 {
             self.last_autosave = now;
-            let ext = self.session.path.as_ref().and_then(|p| p.extension()).map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
-            if matches!(ext.as_str(), "docx" | "json" | "odt" | "rtf")
+            if self.session.path.as_deref().is_some_and(|p| keeps_everything(&p.to_string_lossy()))
                 && let Err(e) = self.session.run("file.save", &json!({}))
             {
                 log::warn!("AutoSave failed: {e}");
@@ -594,7 +658,10 @@ impl WordApp {
             ctx.open_url(egui::OpenUrl::new_tab(url));
         }
         let title = format!("{}{} - WordCraft", self.title_stem(), if self.session.dirty { " •" } else { "" });
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+        if title != self.sent_title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.sent_title = title;
+        }
         self.frame_ms = now_ms() - t0;
         // Typing and formatting land here, after `logic` has reported.
         self.report_dirty();
@@ -608,7 +675,8 @@ impl WordApp {
             let lower = name.to_ascii_lowercase();
             let data = wordcraft_engine::cmd::insert::base64_encode(&bytes);
             let img = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"].iter().any(|e| lower.ends_with(e));
-            let r = if img { self.run("insert.picture", json!({"data": data})) } else { self.run("file.open", json!({"path": name, "data": data})) };
+            let r =
+                if img { self.insert_or_change_picture(json!({"data": data})) } else { self.run("file.open", json!({"path": name, "data": data})) };
             if r.is_ok() {
                 self.ui.backstage = false;
             }
@@ -685,10 +753,11 @@ impl WordApp {
 }
 
 /// Whether saving to `name` keeps the whole document (the formats `file.save` treats as the
-/// document's own file); anything else is a copy that leaves it unsaved.
+/// document's own file, including macro-enabled documents and templates); anything else is a
+/// copy that leaves it unsaved. AutoSave writes only these formats.
 fn keeps_everything(name: &str) -> bool {
     let ext = std::path::Path::new(name).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
-    matches!(ext.as_str(), "docx" | "odt" | "rtf" | "json")
+    matches!(ext.as_str(), "docx" | "docm" | "dotx" | "dotm" | "odt" | "rtf" | "json")
 }
 
 /// User commands that replace or close the document (`file.open` without a path only shows the
@@ -740,8 +809,74 @@ mod tests {
         assert_eq!(ctx.zoom_factor(), 1.0);
     }
 
+    /// Issue #117: a viewport command schedules a repaint, so resending the title every frame kept
+    /// the app redrawing at the monitor's refresh rate while idle.
+    #[test]
+    fn window_title_is_sent_only_when_it_changes() {
+        let ctx = egui::Context::default();
+        let mut app = app();
+        let titles = |app: &mut WordApp| {
+            let out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                app.logic(ui.ctx());
+                app.ui(ui);
+            });
+            let n = out.viewport_output.values().flat_map(|v| v.commands.iter()).filter(|c| matches!(c, egui::ViewportCommand::Title(_))).count();
+            out.drop_without_applying_deltas();
+            n
+        };
+        // The first frames only install fonts; the title goes out once, on the first full frame.
+        let first: usize = (0..4).map(|_| titles(&mut app)).sum();
+        assert_eq!(first, 1);
+        assert_eq!(titles(&mut app), 0);
+        assert_eq!(titles(&mut app), 0);
+        app.session.dirty = true;
+        assert_eq!(titles(&mut app), 1);
+    }
+
     fn app() -> WordApp {
         WordApp::new(Session::new(wordcraft_doc::Document::new()), Services::default())
+    }
+
+    /// Issue #139: Ctrl+wheel over the page didn't zoom.
+    #[test]
+    fn ctrl_wheel_over_canvas_zooms() {
+        let ctx = egui::Context::default();
+        let mut a = app();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0));
+        let mut t = 0.0;
+        let mut frame = |a: &mut WordApp, events: Vec<egui::Event>| {
+            t += 1.0 / 60.0;
+            let input = egui::RawInput { events, time: Some(t), screen_rect: Some(screen), ..Default::default() };
+            ctx.run_ui(input, |ui| {
+                a.logic(ui.ctx());
+                a.ui(ui);
+            })
+            .drop_without_applying_deltas();
+        };
+        // The first frames install fonts; the canvas appears after them.
+        for _ in 0..3 {
+            frame(&mut a, Vec::new());
+        }
+        let over_page = a.canvas.canvas_rect.unwrap().center();
+        frame(&mut a, vec![egui::Event::PointerMoved(over_page)]);
+        let before = a.canvas.scale;
+        let wheel = |y: f32| egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: egui::vec2(0.0, y),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::COMMAND,
+        };
+        frame(&mut a, vec![wheel(1.0)]);
+        for _ in 0..30 {
+            frame(&mut a, Vec::new());
+        }
+        assert!(a.canvas.scale > before * 1.05, "Ctrl+wheel up zooms in: {before} -> {}", a.canvas.scale);
+        let zoomed = a.canvas.scale;
+        frame(&mut a, vec![wheel(-1.0)]);
+        for _ in 0..30 {
+            frame(&mut a, Vec::new());
+        }
+        assert!(a.canvas.scale < zoomed, "Ctrl+wheel down zooms out");
     }
 
     #[test]
@@ -1042,10 +1177,31 @@ mod tests {
             a.execute("file.saveAs", json!({"path": name})).unwrap();
             assert!(a.session.dirty, "{name}");
         }
-        let mut a = typed();
-        a.services.download = Some(Box::new(|_, _| Ok(())));
-        a.execute("file.saveAs", json!({"path": "novel.docx"})).unwrap();
-        assert!(!a.session.dirty);
+        for name in ["novel.docx", "novel.docm", "novel.DOTX", "novel.dotm", "novel.odt", "novel.rtf"] {
+            let mut a = typed();
+            a.services.download = Some(Box::new(|_, _| Ok(())));
+            a.execute("file.saveAs", json!({"path": name})).unwrap();
+            assert!(!a.session.dirty, "{name}");
+        }
+    }
+
+    /// Macro-enabled documents and templates keep everything (#172), so once saved in this
+    /// session AutoSave covers them like a .docx.
+    #[test]
+    fn autosave_covers_macro_enabled_documents_and_templates() {
+        for ext in ["docm", "dotx", "dotm"] {
+            let dir = scratch(&format!("autosave-{ext}"));
+            let path = dir.join(format!("novel.{ext}"));
+            let mut a = typed();
+            a.run("file.save", json!({"path": path.to_string_lossy()})).unwrap();
+            assert!(a.autosaves(), "{ext}");
+            a.run("text.insert", json!({"text": "More "})).unwrap();
+            a.autosave_tick(now_ms() + 10_000.0);
+            assert!(!a.session.dirty, "{ext}: AutoSave wrote the file");
+            let saved = wordcraft_engine::io::open_path(&path).unwrap();
+            assert!(saved.plain_text(wordcraft_doc::StoryRef::Body).contains("More "), "{ext}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     /// Web: the download callback couldn't report a failure, so Save marked the document saved
@@ -1340,6 +1496,58 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Web Save of an opened .docm downloads a .docm, so its macros stay (Codex review, docm lane).
+    #[test]
+    fn web_save_keeps_the_opened_word_format() {
+        let mut doc = wordcraft_doc::Document::new();
+        doc.passthrough.insert("word/vbaProject.bin".into(), std::sync::Arc::new(vec![0xD0, 0xCF, 0x11, 0xE0, 1, 2, 3]));
+        doc.passthrough.insert("word/vbaData.xml".into(), std::sync::Arc::new(b"<wne:vbaSuppData/>".to_vec()));
+        // The docx reader's list of parts the project relates to (wordcraft_docx VBA_RELATED).
+        let related = "http://schemas.microsoft.com/office/2006/relationships/wordVbaData\tword/vbaData.xml\tapplication/vnd.ms-word.vbaData+xml\n";
+        doc.passthrough.insert("wordcraft:vbaProject.related".into(), std::sync::Arc::new(related.as_bytes().to_vec()));
+        let got: std::rc::Rc<std::cell::RefCell<Vec<(String, Vec<u8>)>>> = Default::default();
+        let sink = got.clone();
+        let services = Services {
+            download: Some(Box::new(move |n: &str, b: &[u8]| {
+                sink.borrow_mut().push((n.to_string(), b.to_vec()));
+                Ok(())
+            })),
+            ..Default::default()
+        };
+        let mut a = WordApp::new(Session::new(doc), services);
+        for (opened, expect) in
+            [("m.docm", "m.docm"), ("t.DOTM", "t.DOTM"), ("t.dotx", "t.dotx"), ("notes.odt", "notes.docx"), ("readme.txt", "readme.docx")]
+        {
+            a.session.path = Some(opened.into());
+            a.run("file.save", json!({})).unwrap();
+            let (name, bytes) = got.borrow_mut().pop().unwrap();
+            assert_eq!(name, expect);
+            let back = wordcraft_engine::io::open_bytes(&name, &bytes).unwrap();
+            let macros = name.to_ascii_lowercase().ends_with('m');
+            for part in ["word/vbaProject.bin", "word/vbaData.xml"] {
+                assert_eq!(back.passthrough.contains_key(part), macros, "{opened}: {part}");
+            }
+        }
+        // Save As with an explicit name is a conversion: a .docx can't hold macros.
+        a.session.path = Some("m.docm".into());
+        a.run("file.saveAs", json!({"path": "m.docx"})).unwrap();
+        let (name, bytes) = got.borrow_mut().pop().unwrap();
+        assert_eq!(name, "m.docx");
+        assert!(!wordcraft_engine::io::open_bytes(&name, &bytes).unwrap().passthrough.contains_key("word/vbaProject.bin"));
+    }
+
+    #[test]
+    fn dark_page_survives_restart() {
+        let mut first = app();
+        assert!(!first.session.view.dark_mode);
+        first.run("view.darkMode", json!({"value": true})).unwrap();
+        let saved = serde_json::to_vec(&first.prefs()).unwrap();
+
+        let mut second = app();
+        second.apply_prefs(serde_json::from_slice(&saved).unwrap());
+        assert!(second.session.view.dark_mode);
+    }
+
     #[test]
     fn prefs_without_user_name_keep_default() {
         let mut a = app();
@@ -1348,5 +1556,76 @@ mod tests {
         assert_eq!(a.session.author, default);
         assert!(a.ui.dark);
         assert!(!a.ui.backstage);
+    }
+
+    fn png_bytes(c: [u8; 4]) -> Vec<u8> {
+        let img = image::RgbaImage::from_fn(20, 10, |_, _| image::Rgba(c));
+        let mut b = Vec::new();
+        image::DynamicImage::ImageRgba8(img).write_to(&mut std::io::Cursor::new(&mut b), image::ImageFormat::Png).unwrap();
+        b
+    }
+
+    fn insert_picture(a: &mut WordApp, c: [u8; 4]) {
+        let data = wordcraft_engine::cmd::insert::base64_encode(&png_bytes(c));
+        a.session.run("insert.picture", &json!({"data": data})).unwrap();
+    }
+
+    fn object_count(a: &mut WordApp) -> usize {
+        a.session.run("arrange.selectionPane", &json!({})).unwrap().as_array().map(|x| x.len()).unwrap_or(0)
+    }
+
+    /// A pending Change Picture replaces the selected image instead of inserting (#147).
+    #[test]
+    fn change_picture_replaces_instead_of_inserting() {
+        let mut a = app();
+        a.services.inbox = Some(std::sync::Arc::new(std::sync::Mutex::new(Vec::new())));
+        insert_picture(&mut a, [200, 30, 30, 255]);
+        assert_eq!(object_count(&mut a), 1);
+        let before = a.selected_picture_media().unwrap();
+        a.change_picture_target = a.selected_picture_media();
+        a.services.inbox.as_ref().unwrap().lock().unwrap().push(("new.png".into(), png_bytes([30, 200, 30, 255])));
+        a.drain_inbox();
+        assert_eq!(object_count(&mut a), 1);
+        assert_ne!(a.selected_picture_media().unwrap(), before);
+        assert!(a.change_picture_target.is_none());
+    }
+
+    /// Without a pending change, inbox images insert; stale targets clear on selection change.
+    #[test]
+    fn insert_without_pending_adds_and_stale_target_clears() {
+        let mut a = app();
+        a.services.inbox = Some(std::sync::Arc::new(std::sync::Mutex::new(Vec::new())));
+        insert_picture(&mut a, [200, 30, 30, 255]);
+        a.session.run("select.collapse", &json!({"end": true})).unwrap();
+        a.services.inbox.as_ref().unwrap().lock().unwrap().push(("second.png".into(), png_bytes([30, 30, 200, 255])));
+        a.drain_inbox();
+        assert_eq!(object_count(&mut a), 2);
+        // Stale target (another picture's key) clears instead of replacing the new selection.
+        a.change_picture_target = Some("m0000-gone.png".into());
+        a.clear_stale_change_picture();
+        assert!(a.change_picture_target.is_none());
+    }
+
+    /// `ui.changePicture` needs a selected picture; cancelling the picker clears the target.
+    #[test]
+    fn change_picture_guards_and_cancel_clears() {
+        let mut a = app();
+        assert!(a.run("ui.changePicture", json!({})).is_err());
+        assert!(a.change_picture_target.is_none());
+        insert_picture(&mut a, [200, 30, 30, 255]);
+        // No pickers in tests, so the picker "cancels" and the target clears.
+        assert!(a.run("ui.changePicture", json!({})).is_ok());
+        assert!(a.change_picture_target.is_none());
+    }
+
+    /// Any unrelated action cancels a pending Change Picture (#147 web-picker cancel case).
+    #[test]
+    fn unrelated_command_clears_change_picture_target() {
+        let mut a = app();
+        insert_picture(&mut a, [200, 30, 30, 255]);
+        a.change_picture_target = a.selected_picture_media();
+        assert!(a.change_picture_target.is_some());
+        let _ = a.run("format.bold", json!({}));
+        assert!(a.change_picture_target.is_none());
     }
 }

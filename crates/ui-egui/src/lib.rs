@@ -467,7 +467,7 @@ impl WordApp {
 
     /// Ask where to save, then save there. True once the document is written.
     pub fn save_as_dialog(&mut self) -> bool {
-        let name = self.title_stem() + ".docx";
+        let name = self.default_save_name();
         let picked = self.services.pick_save.as_ref().and_then(|f| f(&name));
         picked.is_some_and(|path| self.run("file.save", json!({"path": path})).is_ok_and(|v| v.get("saved").and_then(Value::as_bool) == Some(true)))
     }

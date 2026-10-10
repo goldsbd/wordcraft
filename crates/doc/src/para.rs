@@ -303,11 +303,14 @@ impl Paragraph {
     }
     /// [`Self::plain_text`] without tracked deletions: the text as it reads with every change accepted.
     pub fn final_text(&self) -> String {
-        self.text_where(|c| c.del.is_none())
+        self.text_without(&self.deleted_ranges())
     }
-    /// [`Self::plain_text`] of the runs whose formatting passes `keep` (asked once per run).
-    pub fn text_where(&self, keep: impl Fn(&CharProps) -> bool) -> String {
-        let dropped: Vec<std::ops::Range<usize>> = self.run_ranges().filter(|(_, c)| !keep(c)).map(|(r, _)| r).collect();
+    /// The byte ranges of the tracked deletions.
+    pub fn deleted_ranges(&self) -> Vec<std::ops::Range<usize>> {
+        self.run_ranges().filter(|(_, c)| c.del.is_some()).map(|(r, _)| r).collect()
+    }
+    /// [`Self::plain_text`] without the text in the byte ranges `dropped`.
+    pub fn text_without(&self, dropped: &[std::ops::Range<usize>]) -> String {
         let mut out = String::with_capacity(self.text.len());
         let mut k = 0;
         for (i, c) in self.text.char_indices() {

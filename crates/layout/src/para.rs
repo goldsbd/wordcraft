@@ -138,6 +138,9 @@ pub struct ParaLayout {
     pub drop_cap: Option<(usize, u8, f32)>,
     /// Clusters after which the line may break with a hyphen (soft hyphens, auto hyphenation), sorted.
     pub hyph_after: Vec<u32>,
+    /// Byte ranges of the text laid out as nothing ([`left_out`]): hidden text that is not shown,
+    /// tracked deletions in the final text. Resolved as laid out, table formatting included.
+    pub left_out: Vec<std::ops::Range<usize>>,
 }
 
 /// Inputs that change a paragraph's layout beyond its own content.
@@ -576,8 +579,10 @@ pub fn layout_para(p: &Paragraph, env: &ParaEnv) -> ParaLayout {
         issues: if env.proofing { proof_issues(p) } else { Vec::new() },
         drop_cap,
         hyph_after: Vec::new(),
+        left_out: Vec::new(),
     };
     pl.hyph_after = hyphenation_points(p, &pl, env.doc.settings.auto_hyphenation && !pl.rp.suppress_hyphens, env);
+    pl.left_out = left;
     for k in pl.hyph_after.clone() {
         if let Some(c) = pl.clusters.get_mut(k as usize) {
             c.break_after = true;

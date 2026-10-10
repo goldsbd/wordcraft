@@ -288,6 +288,40 @@ fn hidden_heading_text_stays_out_of_bookmarks_and_tags() {
 }
 
 #[test]
+fn table_style_hidden_heading_text_stays_out_of_bookmarks_and_tags() {
+    // Hidden by the table style's header row, so only the layout's resolution (table conditional
+    // formatting under the runs' own) says the text is hidden.
+    let mut d = Document::new();
+    d.styles.upsert(wordcraft_doc::Style {
+        id: "SecretHeader".into(),
+        name: "Secret Header".into(),
+        kind: wordcraft_doc::StyleKind::Table,
+        table: Some(wordcraft_doc::styles::TableStyleParts {
+            header_chr: CharProps { hidden: Some(true), ..Default::default() },
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    let mut t = Table::new(2, 2, 400.0);
+    t.props.style = Some("SecretHeader".into());
+    // Header row: a heading hidden as a whole, and "Shown SECRET" where "Shown " is unhidden directly.
+    let mut partly = Paragraph::with_text("Shown ", CharProps { hidden: Some(false), ..Default::default() }).styled("Heading1");
+    let n = partly.len();
+    partly.insert_text(n, "SECRET", &CharProps::default()).unwrap();
+    t.rows[0].cells[0].blocks = vec![para_block(Paragraph::with_text("GONE", CharProps::default()).styled("Heading1"))];
+    t.rows[0].cells[1].blocks = vec![para_block(partly)];
+    t.rows[1].cells[0].blocks = vec![para_block(Paragraph::with_text("Body cell", CharProps::default()))];
+    d.body = vec![para_block(Paragraph::with_text("Before", CharProps::default())), Arc::new(Block::Table(t))];
+    let raw = |opts: PdfOptions| String::from_utf8_lossy(&export(&d, &PdfOptions { compress: false, ..opts }).unwrap()).into_owned();
+    for (tagged, include_markup) in [(false, false), (true, false), (true, true)] {
+        let pdf = raw(PdfOptions { tagged, include_markup, ..Default::default() });
+        let what = format!("tagged {tagged} markup {include_markup}");
+        assert!(!pdf.contains("SECRET") && !pdf.contains("GONE"), "{what}: hidden table heading text in the PDF");
+        assert!(pdf.contains("/Outlines") && pdf.contains("Shown"), "{what}: no bookmark for the visible part");
+    }
+}
+
+#[test]
 fn text_mapping_handles_ligatures_and_extras() {
     let d = Document::from_text("office affine");
     let lay = layout(&d, &mut LayoutCache::new(), &LayoutOptions::default());

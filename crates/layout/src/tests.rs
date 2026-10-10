@@ -128,6 +128,44 @@ fn deleted_text_adds_no_line_break_opportunity_without_markup() {
 }
 
 #[test]
+fn hidden_soft_hyphen_is_no_hyphenation_point_when_hidden_text_is_not_shown() {
+    // As with deletions: "ab\u{ad}cdef" where only the soft hyphen is hidden text.
+    let mut d = Document::from_text("ab\u{ad}cdef");
+    d.format_range(&Pos::body(0, 2), &Pos::body(0, 4), &|c| c.hidden = Some(true)).unwrap();
+    d.format_paragraphs(&Pos::body(0, 0), &Pos::body(0, 0), &|p| p.indent_right = Some(468.0 - 26.0)).unwrap();
+    let hyphens = |show_hidden: bool| {
+        let l = layout(&d, &mut LayoutCache::new(), &LayoutOptions { show_hidden, ..Default::default() });
+        let Some(Placed::Lines { para, .. }) = l.pages[0].items.iter().find(|i| matches!(i, Placed::Lines { .. })) else { panic!() };
+        para.lines.iter().filter(|l| l.hyphen.is_some()).count()
+    };
+    // Hidden text shown: the soft hyphen is there, and the word breaks at it.
+    assert_eq!(hyphens(true), 1);
+    // Not shown (as printed): no soft hyphen, so no hyphen. Word breaks "abc" / "def" here.
+    assert_eq!(hyphens(false), 0);
+}
+
+#[test]
+fn hidden_text_adds_no_line_break_opportunity_when_not_shown() {
+    // "xx ab" + hidden soft hyphen or space + "cdef", in a column where "xx ab-" and "abcdef" fit
+    // but "xx abcdef" does not. Measured in Word (hidden text not printed): "xx" / "abcdef" both times.
+    for hidden in ["\u{ad}", " "] {
+        let mut d = Document::from_text(&format!("xx ab{hidden}cdef"));
+        let end = 5 + hidden.len();
+        d.format_range(&Pos::body(0, 5), &Pos::body(0, end), &|c| c.hidden = Some(true)).unwrap();
+        d.format_paragraphs(&Pos::body(0, 0), &Pos::body(0, 0), &|p| p.indent_right = Some(468.0 - 40.0)).unwrap();
+        let line_starts = |show_hidden: bool| {
+            let l = layout(&d, &mut LayoutCache::new(), &LayoutOptions { show_hidden, ..Default::default() });
+            let Some(Placed::Lines { para, .. }) = l.pages[0].items.iter().find(|i| matches!(i, Placed::Lines { .. })) else { panic!() };
+            para.lines.iter().map(|l| para.clusters.get(l.c0).map_or(usize::MAX, |c| c.start)).collect::<Vec<_>>()
+        };
+        // Shown, the word breaks at the hidden soft hyphen or space.
+        assert_eq!(line_starts(true), vec![0, end], "{hidden:?}");
+        // Not shown, "abcdef" is one word, so the line breaks at the space before it.
+        assert_eq!(line_starts(false), vec![0, 3], "{hidden:?}");
+    }
+}
+
+#[test]
 fn page_break_char_starts_new_page() {
     let mut d = Document::from_text("one");
     d.insert_text(&Pos::body(0, 3), "\u{000C}", &Default::default()).unwrap();

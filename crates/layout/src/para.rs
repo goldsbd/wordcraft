@@ -325,6 +325,12 @@ impl<'a> Builder<'a> {
     }
 }
 
+/// Whether text with this formatting is left out of the layout: hidden text unless it is shown, and
+/// tracked deletions in the final text. It takes no room, draws nothing and is no place to break.
+pub(crate) fn left_out(rc: &ResolvedChar, show_hidden: bool, hide_deleted: bool) -> bool {
+    (rc.hidden && !show_hidden) || (rc.del.is_some() && hide_deleted)
+}
+
 /// Lay out one paragraph.
 pub fn layout_para(p: &Paragraph, env: &ParaEnv) -> ParaLayout {
     let doc = env.doc;
@@ -361,10 +367,13 @@ pub fn layout_para(p: &Paragraph, env: &ParaEnv) -> ParaLayout {
         .filter(|c| !matches!(*c, '\t' | LINE_BREAK | PAGE_BREAK | COLUMN_BREAK | OBJ | '\r' | ' '))
         .filter(|c| p.text.len() > c.len_utf8());
     let mut drop_cap = None;
+    // The byte ranges of runs left out of the layout.
+    let mut left: Vec<std::ops::Range<usize>> = Vec::new();
     for (range, props) in p.run_ranges() {
         let rc = resolve(props);
         let Some(text) = p.text.get(range.clone()) else { continue };
-        if (rc.hidden && !b.env.show_hidden) || (rc.del.is_some() && b.env.hide_deleted) {
+        if left_out(&rc, b.env.show_hidden, b.env.hide_deleted) {
+            left.push(range.clone());
             let si = b.style(&rc, None, false);
             let g = b.glyphs.len() as u32;
             for (i, c) in text.char_indices() {
@@ -479,16 +488,14 @@ pub fn layout_para(p: &Paragraph, env: &ParaEnv) -> ParaLayout {
             b.shape(s, range.start + seg, &rc, None);
         }
     }
-    // Break opportunities, in the text as laid out: without markup, tracked deletions are left out,
-    // so a deleted space or soft hyphen is no place to break.
-    let deleted: Vec<std::ops::Range<usize>> =
-        if env.hide_deleted { p.run_ranges().filter(|(_, c)| c.del.is_some()).map(|(r, _)| r).collect() } else { Vec::new() };
+    // Break opportunities, in the text as laid out: hidden text that is not shown and, without
+    // markup, tracked deletions are left out, so a space or soft hyphen there is no place to break.
     // The text and, for each char of it, its end there and in `p.text`.
-    let (text, ends): (std::borrow::Cow<str>, Vec<(usize, usize)>) = if deleted.is_empty() {
+    let (text, ends): (std::borrow::Cow<str>, Vec<(usize, usize)>) = if left.is_empty() {
         (p.text.as_str().into(), Vec::new())
     } else {
         let (mut text, mut ends) = (String::new(), Vec::new());
-        for (i, c) in p.text.char_indices().filter(|(i, _)| !deleted.iter().any(|r| r.contains(i))) {
+        for (i, c) in p.text.char_indices().filter(|(i, _)| !left.iter().any(|r| r.contains(i))) {
             text.push(c);
             ends.push((text.len(), i + c.len_utf8()));
         }
@@ -497,7 +504,7 @@ pub fn layout_para(p: &Paragraph, env: &ParaEnv) -> ParaLayout {
     let mut opps = std::collections::HashSet::new();
     for (i, o) in unicode_linebreak::linebreaks(&text) {
         if o == unicode_linebreak::BreakOpportunity::Allowed || i < text.len() {
-            if deleted.is_empty() {
+            if left.is_empty() {
                 opps.insert(i);
             } else if let Ok(k) = ends.binary_search_by_key(&i, |e| e.0)
                 && let Some((_, end)) = ends.get(k)
@@ -558,7 +565,7 @@ pub fn layout_para(p: &Paragraph, env: &ParaEnv) -> ParaLayout {
         drop_cap,
         hyph_after: Vec::new(),
     };
-    pl.hyph_after = hyphenation_points(p, &pl, env.doc.settings.auto_hyphenation && !pl.rp.suppress_hyphens, env.hide_deleted);
+    pl.hyph_after = hyphenation_points(p, &pl, env.doc.settings.auto_hyphenation && !pl.rp.suppress_hyphens, env);
     for k in pl.hyph_after.clone() {
         if let Some(c) = pl.clusters.get_mut(k as usize) {
             c.break_after = true;
@@ -1020,9 +1027,9 @@ fn hyphen_glyph(pl: &ParaLayout, style: u16, cache: &mut Vec<(u16, u32, f32)>) -
 }
 
 /// Clusters after which a line may end with a hyphen: soft hyphens always, and dictionary or
-/// pattern hyphenation points of each word when automatic hyphenation is on. With `hide_deleted`,
-/// never in a tracked deletion: that text is not in the final document.
-fn hyphenation_points(p: &Paragraph, pl: &ParaLayout, auto: bool, hide_deleted: bool) -> Vec<u32> {
+/// pattern hyphenation points of each word when automatic hyphenation is on. Never in text the
+/// layout leaves out ([`left_out`]): hidden text that is not shown, or a deletion in the final text.
+fn hyphenation_points(p: &Paragraph, pl: &ParaLayout, auto: bool, env: &ParaEnv) -> Vec<u32> {
     let mut bytes: Vec<usize> = p.text.char_indices().filter(|(_, c)| *c == SOFT_HYPHEN).map(|(i, c)| i + c.len_utf8()).collect();
     if auto {
         let lim = wordcraft_proof::hyphen::Limits::default();
@@ -1058,7 +1065,7 @@ fn hyphenation_points(p: &Paragraph, pl: &ParaLayout, auto: bool, hide_deleted: 
         .iter()
         .enumerate()
         .filter(|(_, c)| matches!(c.kind, ClKind::Text | ClKind::Marker) && bytes.binary_search(&c.end).is_ok())
-        .filter(|(_, c)| !(hide_deleted && pl.styles.get(c.style as usize).is_some_and(|s| s.rc.del.is_some())))
+        .filter(|(_, c)| !pl.styles.get(c.style as usize).is_some_and(|s| left_out(&s.rc, env.show_hidden, env.hide_deleted)))
         .map(|(i, _)| i as u32)
         .collect();
     out.dedup();

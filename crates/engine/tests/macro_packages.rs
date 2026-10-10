@@ -226,3 +226,44 @@ fn hostile_vba_parts_never_panic() {
         }
     }
 }
+
+/// Open `files` as a .docm, save it as .docm, and return the saved package.
+fn resave_docm(files: &BTreeMap<String, Vec<u8>>) -> BTreeMap<String, Vec<u8>> {
+    let doc = open_bytes("m.docm", &zip(files)).expect("open docm");
+    unzip(&save_bytes("m.docm", &doc).expect("save docm"))
+}
+
+#[test]
+fn vba_data_is_carried_byte_for_byte_whatever_its_encoding() {
+    let vba = fake_vba();
+    let base = unzip(&docm_package(&vba, CT_DOCM));
+    // UTF-16 LE with a BOM (a valid XML encoding), and bytes our XML reader would object to:
+    // we are a passthrough, so the part is neither rejected nor "repaired".
+    let utf16: Vec<u8> = [0xFF, 0xFE].into_iter().chain(VBA_DATA.replace("UTF-8", "UTF-16").encode_utf16().flat_map(u16::to_le_bytes)).collect();
+    let unclosed = b"<?xml version=\"1.0\"?><wne:vbaSuppData xmlns:wne=\"http://schemas.microsoft.com/office/word/2006/wordml\"><wne:mcds>".to_vec();
+    let mismatched = b"<a><b></a></b>".to_vec();
+    let not_xml = vec![0x00, 0xFF, 0x13, 0x37];
+    for (label, data) in [("utf-16", utf16), ("unclosed", unclosed), ("mismatched", mismatched), ("not xml", not_xml)] {
+        let mut files = base.clone();
+        files.insert("word/vbaData.xml".into(), data.clone());
+        let out = resave_docm(&files);
+        assert!(out.get("word/vbaData.xml") == Some(&data), "{label}: vbaData.xml must survive byte for byte");
+        let vba_rels = text(&out, "word/_rels/vbaProject.bin.rels");
+        assert!(vba_rels.contains(REL_VBA_DATA) && vba_rels.contains("Target=\"vbaData.xml\""), "{label}: {vba_rels}");
+        assert_eq!(content_type(&out, "/word/vbaData.xml").as_deref(), Some(CT_VBA_DATA), "{label}");
+        assert!(out.get("word/vbaProject.bin") == Some(&vba), "{label}: vbaProject.bin must survive byte for byte");
+        assert_package_consistent(&out);
+    }
+}
+
+#[test]
+fn vba_data_relationship_to_a_missing_part_is_not_written() {
+    let vba = fake_vba();
+    let mut files = unzip(&docm_package(&vba, CT_DOCM));
+    files.remove("word/vbaData.xml");
+    let out = resave_docm(&files);
+    assert!(out.get("word/vbaProject.bin") == Some(&vba), "the project is kept");
+    assert!(!out.contains_key("word/vbaData.xml"));
+    assert!(!out.contains_key("word/_rels/vbaProject.bin.rels"), "no relationship to a part we don't have");
+    assert_package_consistent(&out);
+}

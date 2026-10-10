@@ -117,18 +117,18 @@ pub fn read(bytes: &[u8]) -> Result<Document, DocxError> {
     {
         r.doc.passthrough.insert("docProps/custom.xml".into(), Arc::new(b.to_vec()));
     }
-    // A macro project rides along as opaque bytes so a .docm/.dotm saved again keeps it.
+    // A macro project and its VBA data ride along as opaque bytes (never parsed, never run) so a
+    // .docm/.dotm saved again carries exactly what the file had. Only the relationships are read.
     if let Some(v) = part(rt::VBA_PROJECT)
         && let Some(b) = pkg.get(&v).filter(|b| !b.is_empty())
     {
         r.doc.passthrough.insert(VBA_PROJECT_PART.into(), Arc::new(b.to_vec()));
-        if let Some(d) = pkg.rels(&v).by_type(rt::VBA_DATA).filter(|d| !d.external)
-            && let Some(b) = pkg.get(&d.target)
-        {
-            if crate::xml::parse(b).is_ok() {
-                r.doc.passthrough.insert(VBA_DATA_PART.into(), Arc::new(b.to_vec()));
-            } else {
-                log::warn!("docx: ignoring malformed VBA data part {}", d.target);
+        if let Some(d) = pkg.rels(&v).by_type(rt::VBA_DATA).filter(|d| !d.external) {
+            match pkg.get(&d.target) {
+                Some(b) => {
+                    r.doc.passthrough.insert(VBA_DATA_PART.into(), Arc::new(b.to_vec()));
+                }
+                None => log::warn!("docx: VBA data part {} is missing; keeping the project without it", d.target),
             }
         }
     }

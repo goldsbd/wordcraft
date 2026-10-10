@@ -292,13 +292,12 @@ pub fn write_as(doc: &Document, flavor: Flavor) -> Result<Vec<u8>, DocxError> {
         }
     }
 
-    // The macro project, verbatim. A macro-free package can't hold one (Word drops it too).
+    // The macro project and its VBA data, verbatim. A macro-free package can't hold them (Word
+    // drops them too).
     if let Some(vba) = doc.passthrough.get(VBA_PROJECT_PART).filter(|b| !b.is_empty()) {
         if flavor.macros() {
             let mut vba_rels = PartRels::default();
-            if let Some(data) = doc.passthrough.get(VBA_DATA_PART)
-                && xml::parse(data).is_ok()
-            {
+            if let Some(data) = doc.passthrough.get(VBA_DATA_PART) {
                 vba_rels.add(rt::VBA_DATA, "vbaData.xml", false);
                 push_part(&mut entries, &mut overrides, VBA_DATA_PART, data.to_vec(), "application/vnd.ms-word.vbaData+xml", PartRels::default());
             }

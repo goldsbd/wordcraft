@@ -313,7 +313,9 @@ pub fn write_as(doc: &Document, flavor: Flavor) -> Result<Vec<u8>, DocxError> {
                 if clash && !ours {
                     continue;
                 }
-                vba_rels.add(kind, target, false);
+                // A relative reference whose first segment has a colon would read as a URI scheme.
+                let target = if target.split('/').next().is_some_and(|seg| seg.contains(':')) { format!("./{target}") } else { target.to_string() };
+                vba_rels.add(kind, &target, false);
                 if !ours {
                     push_part(&mut entries, &mut overrides, path, bytes.to_vec(), ct, PartRels::default());
                     written.push(path.to_string());

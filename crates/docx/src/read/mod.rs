@@ -179,7 +179,14 @@ impl Reader<'_> {
         let mut manifest = String::new();
         let mut kept = 0usize;
         for rel in self.pkg.rels(project).list.iter().filter(|r| !r.external) {
-            let path = rel.target.as_str();
+            // Part names compare case-insensitively (OPC): `/WORD/x` names the part the writer
+            // stores as `word/x`.
+            let target = rel.target.as_str();
+            let path = match (target.get(..5), target.get(5..)) {
+                (Some(dir), Some(rest)) if dir.eq_ignore_ascii_case("word/") => format!("word/{rest}"),
+                _ => target.to_string(),
+            };
+            let path = path.as_str();
             let ct = types.of(path).unwrap_or("application/octet-stream");
             let usable = path.strip_prefix("word/").is_some_and(|t| !t.is_empty())
                 && !path.to_ascii_lowercase().ends_with(".rels")

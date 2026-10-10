@@ -95,7 +95,20 @@ fn assert_package_consistent(files: &BTreeMap<String, Vec<u8>>) {
                 continue;
             }
             let target = rel.split("Target=\"").nth(1).and_then(|s| s.split('"').next()).unwrap_or("");
-            let path = if src_dir.is_empty() { target.to_string() } else { format!("{src_dir}/{target}") };
+            // An internal target is a relative reference: its first segment can't read as a URI scheme.
+            let first = target.split('/').next().unwrap_or("");
+            assert!(!first.contains(':'), "{name}: target {target} parses as a URI scheme");
+            let mut segs: Vec<&str> = if target.starts_with('/') { Vec::new() } else { src_dir.split('/').filter(|s| !s.is_empty()).collect() };
+            for seg in target.split('/') {
+                match seg {
+                    "" | "." => {}
+                    ".." => {
+                        segs.pop();
+                    }
+                    s => segs.push(s),
+                }
+            }
+            let path = segs.join("/");
             assert!(files.contains_key(&path), "{name} points at missing part {path}");
         }
     }
@@ -411,4 +424,52 @@ fn vba_related_parts_are_bounded_and_never_shadow_ours() {
     let extras = out.keys().filter(|k| k.starts_with("word/extra")).count();
     assert!((1..=64).contains(&extras), "{extras} extra parts carried");
     assert_package_consistent(&out);
+}
+
+/// Re-target the VBA relationships in `files`: (old target, new target) pairs.
+fn retarget(files: &mut BTreeMap<String, Vec<u8>>, pairs: &[(&str, &str)]) {
+    let mut rels = text(files, "word/_rels/vbaProject.bin.rels");
+    for (from, to) in pairs {
+        rels = rels.replace(&format!("Target=\"{from}\""), &format!("Target=\"{to}\""));
+    }
+    files.insert("word/_rels/vbaProject.bin.rels".into(), rels.into_bytes());
+}
+
+#[test]
+fn vba_targets_match_part_names_case_insensitively() {
+    let vba = fake_vba();
+    for (ext, main_ct) in [("docm", CT_DOCM), ("dotm", CT_DOTM)] {
+        let mut src = signed_package(&vba, main_ct);
+        // OPC part names compare case-insensitively: /WORD/x names the part stored as word/x.
+        retarget(&mut src, &[("vbaData.xml", "/WORD/vbaData.xml"), ("vbaProjectSignature.bin", "../WORD/vbaProjectSignature.bin")]);
+        let name = format!("u.{ext}");
+        let out = unzip(&save_bytes(&name, &open_bytes(&name, &zip(&src)).expect("open")).expect("save"));
+        assert_eq!(text(&out, "word/vbaData.xml"), VBA_DATA, "{name}");
+        assert!(out.get("word/vbaProjectSignature.bin") == src.get("word/vbaProjectSignature.bin"), "{name}: signature must survive");
+        let vba_rels = text(&out, "word/_rels/vbaProject.bin.rels");
+        assert!(vba_rels.contains(REL_VBA_DATA) && vba_rels.contains(SIGNATURES[0].0), "{name}: {vba_rels}");
+        assert_eq!(content_type(&out, "/word/vbaProjectSignature.bin").as_deref(), Some(SIGNATURES[0].2));
+        assert_package_consistent(&out);
+    }
+}
+
+#[test]
+fn vba_part_names_with_a_colon_stay_relative_references() {
+    let vba = fake_vba();
+    let mut src = signed_package(&vba, CT_DOCM);
+    let sig = src.remove("word/vbaProjectSignature.bin").expect("signature");
+    src.insert("word/sig:legacy.bin".into(), sig.clone());
+    let ct = text(&src, "[Content_Types].xml").replace("/word/vbaProjectSignature.bin", "/word/sig:legacy.bin");
+    src.insert("[Content_Types].xml".into(), ct.into_bytes());
+    retarget(&mut src, &[("vbaProjectSignature.bin", "/word/sig:legacy.bin")]);
+    let mut pkg = zip(&src);
+    for generation in 1..=2 {
+        let out = unzip(&save_bytes("c.docm", &open_bytes("c.docm", &pkg).expect("open")).expect("save"));
+        assert!(out.get("word/sig:legacy.bin") == Some(&sig), "gen {generation}: signature must survive byte for byte");
+        let vba_rels = text(&out, "word/_rels/vbaProject.bin.rels");
+        assert!(vba_rels.contains(&format!(r#"Type="{}" Target="./sig:legacy.bin""#, SIGNATURES[0].0)), "gen {generation}: {vba_rels}");
+        assert!(vba_rels.contains(r#"Target="vbaData.xml""#), "ordinary names keep the plain form Word accepts: {vba_rels}");
+        assert_package_consistent(&out);
+        pkg = zip(&out);
+    }
 }

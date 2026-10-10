@@ -31,7 +31,14 @@ pub mod rt {
     pub const FOOTER: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer";
     pub const IMAGE: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image";
     pub const HYPERLINK: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink";
+    pub const VBA_PROJECT: &str = "http://schemas.microsoft.com/office/2006/relationships/vbaProject";
+    pub const VBA_DATA: &str = "http://schemas.microsoft.com/office/2006/relationships/wordVbaData";
 }
+
+/// `Document::passthrough` keys for a macro project, kept as opaque bytes (never parsed or run).
+pub const VBA_PROJECT_PART: &str = "word/vbaProject.bin";
+/// The VBA project's companion part (macro names and key bindings), related from the project.
+pub const VBA_DATA_PART: &str = "word/vbaData.xml";
 
 /// Does relationship type `t` end with `suffix` (ignoring the transitional/strict prefix)?
 pub fn rel_is(t: &str, full: &str) -> bool {

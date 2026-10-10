@@ -9,9 +9,9 @@ use wordcraft_doc::numbering::LevelSuffix;
 use wordcraft_doc::styles::{Style, StyleKind};
 use wordcraft_doc::{Blocks, Document, PartKind};
 
-use crate::DocxError;
-use crate::package::{rt, zip_entries};
+use crate::package::{VBA_DATA_PART, VBA_PROJECT_PART, rt, zip_entries};
 use crate::xml::{self, W};
+use crate::{DocxError, Flavor};
 
 /// Relationships of one part.
 #[derive(Default)]
@@ -77,11 +77,15 @@ pub(crate) struct Writer<'d> {
     used_media: std::collections::BTreeSet<String>,
 }
 
-const CT_MAIN: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml";
 const CT_WML: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.";
 
 /// Write a `.docx` package.
 pub fn write(doc: &Document) -> Result<Vec<u8>, DocxError> {
+    write_as(doc, Flavor::Document)
+}
+
+/// Write a package of the given flavour (`.docx`, `.docm`, `.dotx`, `.dotm`).
+pub fn write_as(doc: &Document, flavor: Flavor) -> Result<Vec<u8>, DocxError> {
     let mut wr = Writer {
         doc,
         media_files: BTreeMap::new(),
@@ -288,9 +292,26 @@ pub fn write(doc: &Document) -> Result<Vec<u8>, DocxError> {
         }
     }
 
+    // The macro project, verbatim. A macro-free package can't hold one (Word drops it too).
+    if let Some(vba) = doc.passthrough.get(VBA_PROJECT_PART).filter(|b| !b.is_empty()) {
+        if flavor.macros() {
+            let mut vba_rels = PartRels::default();
+            if let Some(data) = doc.passthrough.get(VBA_DATA_PART)
+                && xml::parse(data).is_ok()
+            {
+                vba_rels.add(rt::VBA_DATA, "vbaData.xml", false);
+                push_part(&mut entries, &mut overrides, VBA_DATA_PART, data.to_vec(), "application/vnd.ms-word.vbaData+xml", PartRels::default());
+            }
+            rels.add(rt::VBA_PROJECT, "vbaProject.bin", false);
+            push_part(&mut entries, &mut overrides, VBA_PROJECT_PART, vba.to_vec(), "application/vnd.ms-office.vbaProject", vba_rels);
+        } else {
+            log::warn!("docx: {flavor:?} can't hold macros; the VBA project is left out");
+        }
+    }
+
     // Main part goes first in the zip after content types.
     entries.insert(0, ("word/document.xml".into(), body));
-    overrides.insert(0, ("/word/document.xml".into(), CT_MAIN.into()));
+    overrides.insert(0, ("/word/document.xml".into(), flavor.main_content_type().into()));
     entries.insert(1, ("word/_rels/document.xml.rels".into(), rels.xml()));
 
     // Package-level parts.

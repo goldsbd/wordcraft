@@ -13,7 +13,7 @@ use wordcraft_doc::styles::{Style, StyleKind, StyleSheet, TableStyleParts};
 use wordcraft_doc::{Blocks, Comment, Document, PartKind, Revision, RevisionKind};
 
 use crate::DocxError;
-use crate::package::{Package, Rels, rt};
+use crate::package::{Package, Rels, VBA_DATA_PART, VBA_PROJECT_PART, rt};
 use crate::units::{flag, int, on_off, tw, u32_of};
 use crate::xml::El;
 pub(crate) use props::PropCtx;
@@ -116,6 +116,21 @@ pub fn read(bytes: &[u8]) -> Result<Document, DocxError> {
         && let Some(b) = pkg.get(&c.target)
     {
         r.doc.passthrough.insert("docProps/custom.xml".into(), Arc::new(b.to_vec()));
+    }
+    // A macro project rides along as opaque bytes so a .docm/.dotm saved again keeps it.
+    if let Some(v) = part(rt::VBA_PROJECT)
+        && let Some(b) = pkg.get(&v).filter(|b| !b.is_empty())
+    {
+        r.doc.passthrough.insert(VBA_PROJECT_PART.into(), Arc::new(b.to_vec()));
+        if let Some(d) = pkg.rels(&v).by_type(rt::VBA_DATA).filter(|d| !d.external)
+            && let Some(b) = pkg.get(&d.target)
+        {
+            if crate::xml::parse(b).is_ok() {
+                r.doc.passthrough.insert(VBA_DATA_PART.into(), Arc::new(b.to_vec()));
+            } else {
+                log::warn!("docx: ignoring malformed VBA data part {}", d.target);
+            }
+        }
     }
     let mut doc = r.doc;
     doc.ensure_nonempty();

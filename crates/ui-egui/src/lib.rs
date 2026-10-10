@@ -602,8 +602,7 @@ impl WordApp {
     fn autosave_tick(&mut self, now: f64) {
         if self.autosaves() && self.session.dirty && now - self.last_autosave > 2500.0 && now - self.canvas.caret_visible_since > 1500.0 {
             self.last_autosave = now;
-            let ext = self.session.path.as_ref().and_then(|p| p.extension()).map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
-            if matches!(ext.as_str(), "docx" | "json" | "odt" | "rtf")
+            if self.session.path.as_deref().is_some_and(|p| keeps_everything(&p.to_string_lossy()))
                 && let Err(e) = self.session.run("file.save", &json!({}))
             {
                 log::warn!("AutoSave failed: {e}");
@@ -753,10 +752,11 @@ impl WordApp {
 }
 
 /// Whether saving to `name` keeps the whole document (the formats `file.save` treats as the
-/// document's own file); anything else is a copy that leaves it unsaved.
+/// document's own file, including macro-enabled documents and templates); anything else is a
+/// copy that leaves it unsaved. AutoSave writes only these formats.
 fn keeps_everything(name: &str) -> bool {
     let ext = std::path::Path::new(name).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
-    matches!(ext.as_str(), "docx" | "odt" | "rtf" | "json")
+    matches!(ext.as_str(), "docx" | "docm" | "dotx" | "dotm" | "odt" | "rtf" | "json")
 }
 
 /// User commands that replace or close the document (`file.open` without a path only shows the
@@ -1174,10 +1174,31 @@ mod tests {
             a.execute("file.saveAs", json!({"path": name})).unwrap();
             assert!(a.session.dirty, "{name}");
         }
-        let mut a = typed();
-        a.services.download = Some(Box::new(|_, _| Ok(())));
-        a.execute("file.saveAs", json!({"path": "novel.docx"})).unwrap();
-        assert!(!a.session.dirty);
+        for name in ["novel.docx", "novel.docm", "novel.DOTX", "novel.dotm", "novel.odt", "novel.rtf"] {
+            let mut a = typed();
+            a.services.download = Some(Box::new(|_, _| Ok(())));
+            a.execute("file.saveAs", json!({"path": name})).unwrap();
+            assert!(!a.session.dirty, "{name}");
+        }
+    }
+
+    /// Macro-enabled documents and templates keep everything (#172), so once saved in this
+    /// session AutoSave covers them like a .docx.
+    #[test]
+    fn autosave_covers_macro_enabled_documents_and_templates() {
+        for ext in ["docm", "dotx", "dotm"] {
+            let dir = scratch(&format!("autosave-{ext}"));
+            let path = dir.join(format!("novel.{ext}"));
+            let mut a = typed();
+            a.run("file.save", json!({"path": path.to_string_lossy()})).unwrap();
+            assert!(a.autosaves(), "{ext}");
+            a.run("text.insert", json!({"text": "More "})).unwrap();
+            a.autosave_tick(now_ms() + 10_000.0);
+            assert!(!a.session.dirty, "{ext}: AutoSave wrote the file");
+            let saved = wordcraft_engine::io::open_path(&path).unwrap();
+            assert!(saved.plain_text(wordcraft_doc::StoryRef::Body).contains("More "), "{ext}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     /// Web: the download callback couldn't report a failure, so Save marked the document saved

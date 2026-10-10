@@ -707,6 +707,7 @@
 	Text:	文字：
 	Text\nBox	文本框
 	Text\nDirection	文字方向
+	That format doesn't keep everything, so the document is still open. Save it as a Word document (.docx) to go on.	该格式无法保留全部内容，因此文档仍保持打开。请将其保存为 Word 文档 (.docx) 后再继续。
 	The new style takes the formatting of the current paragraph.	新样式将采用当前段落的格式。
 	Theme Colors	主题颜色
 	Theme Fonts	主题字体

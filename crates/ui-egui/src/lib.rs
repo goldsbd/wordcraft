@@ -224,8 +224,9 @@ impl WordApp {
             if let Some(d) = &self.services.download {
                 d(&name, &bytes);
             }
-            // An export is a copy: the document itself still has unsaved changes.
-            if matches!(id, "file.save" | "file.saveAs") {
+            // An export is a copy, and so is a save in a format that doesn't keep everything (a
+            // page image, plain text): the document itself still has unsaved changes.
+            if matches!(id, "file.save" | "file.saveAs") && keeps_everything(&name) {
                 self.session.dirty = false;
             }
             return Ok(json!({"downloaded": name, "bytes": bytes.len()}));
@@ -275,15 +276,23 @@ impl WordApp {
         self.execute(&then, params).map(|r| json!({"done": true, "result": r}))
     }
 
-    /// Save before New/Open/Close: true once the document is safely written.
+    /// Save before New/Open/Close: true once the document is safely written. A save in a format
+    /// that doesn't keep everything (a page image, plain text) writes a copy and leaves the
+    /// document unsaved, so it doesn't count: the command is cancelled and the document stays.
     fn save_for_prompt(&mut self) -> bool {
-        if self.session.path.is_none() && self.services.download.is_none() {
-            return self.save_as_dialog();
+        let saved = if self.session.path.is_none() && self.services.download.is_none() {
+            self.save_as_dialog()
+        } else {
+            match self.execute("file.save", json!({})) {
+                Ok(v) => v.get("saved").and_then(Value::as_bool) == Some(true) || v.get("downloaded").is_some(),
+                Err(_) => false,
+            }
+        };
+        if saved && self.session.dirty {
+            self.status(tl!("That format doesn't keep everything, so the document is still open. Save it as a Word document (.docx) to go on."));
+            return false;
         }
-        match self.execute("file.save", json!({})) {
-            Ok(v) => v.get("saved").and_then(Value::as_bool) == Some(true) || v.get("downloaded").is_some(),
-            Err(_) => false,
-        }
+        saved
     }
 
     /// The window's close button (or the system) asked to quit. Returns true to let the window
@@ -668,6 +677,13 @@ impl WordApp {
     }
 }
 
+/// Whether saving to `name` keeps the whole document (the formats `file.save` treats as the
+/// document's own file); anything else is a copy that leaves it unsaved.
+fn keeps_everything(name: &str) -> bool {
+    let ext = std::path::Path::new(name).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    matches!(ext.as_str(), "docx" | "odt" | "rtf" | "json")
+}
+
 /// User commands that replace or close the document (`file.open` without a path only shows the
 /// file picker; the open that follows is checked).
 fn discards_document(id: &str, params: &Value) -> bool {
@@ -983,6 +999,44 @@ mod tests {
         let saved = wordcraft_engine::io::open_path(&path).unwrap();
         assert!(saved.plain_text(wordcraft_doc::StoryRef::Body).contains("Revised Draft"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Save As to a format that doesn't keep everything (a .png of page 1, plain text) reports
+    /// `saved` but leaves the document unsaved; the prompt took that as saved and replaced it.
+    #[test]
+    fn a_save_that_drops_content_does_not_continue() {
+        for ext in ["png", "txt"] {
+            let dir = scratch(&format!("lossy-{ext}"));
+            let picked = dir.join(format!("novel.{ext}")).to_string_lossy().to_string();
+            let mut a = typed();
+            a.services.pick_save = Some(Box::new(move |_| Some(picked.clone())));
+            a.run("file.new", json!({})).unwrap();
+            a.status_msg = None;
+            let r = a.run("ui.saveChanges", json!({"answer": "save"})).unwrap();
+            assert_eq!(r["done"], false, "{ext}: the New was cancelled");
+            assert!(dir.join(format!("novel.{ext}")).exists(), "{ext}: the copy was written");
+            assert_eq!(prompt(&a), None);
+            assert!(body_text(&a).contains(UNSAVED), "{ext}: the document is kept");
+            assert!(a.session.dirty);
+            assert!(a.status_msg.is_some(), "{ext}: the status bar says why");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// Web: a download in a format that doesn't keep everything marked the document saved, so
+    /// the prompt and the leave-page guard let it go.
+    #[test]
+    fn web_downloads_that_drop_content_leave_the_document_unsaved() {
+        for name in ["novel.png", "novel.txt", "novel.md"] {
+            let mut a = typed();
+            a.services.download = Some(Box::new(|_, _| {}));
+            a.execute("file.saveAs", json!({"path": name})).unwrap();
+            assert!(a.session.dirty, "{name}");
+        }
+        let mut a = typed();
+        a.services.download = Some(Box::new(|_, _| {}));
+        a.execute("file.saveAs", json!({"path": "novel.docx"})).unwrap();
+        assert!(!a.session.dirty);
     }
 
     /// A new document has no path: Save goes through Save As, and cancelling that cancels the New.

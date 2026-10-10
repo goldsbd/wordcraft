@@ -696,6 +696,7 @@
 	Text:	テキスト:
 	Text\nBox	テキスト ボックス
 	Text\nDirection	文字列の方向
+	That format doesn't keep everything, so the document is still open. Save it as a Word document (.docx) to go on.	その形式ではすべてを保存できないため、文書は開いたままです。続けるには Word 文書 (.docx) として保存してください。
 	The new style takes the formatting of the current paragraph.	新しいスタイルには現在の段落の書式が使われます。
 	Theme Colors	テーマの色
 	Theme Fonts	テーマのフォント

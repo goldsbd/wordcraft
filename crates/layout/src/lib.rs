@@ -292,10 +292,33 @@ impl Ctx<'_> {
 
 /// Which of `p`'s objects (by index) the layout leaves out ([`para::left_out`]): anchored in hidden
 /// text unless `show_hidden`, or in a tracked deletion with `hide_deleted`.
-fn left_out_objects<'a>(doc: &'a Document, p: &'a Paragraph, show_hidden: bool, hide_deleted: bool) -> impl Fn(usize) -> bool + 'a {
-    let offs = if hide_deleted || !show_hidden { p.object_offsets() } else { Vec::new() };
-    let style = p.props.style.as_deref();
-    move |k| offs.get(k).is_some_and(|off| para::left_out(&doc.styles.resolve_char(style, p.props_of_char(*off)), show_hidden, hide_deleted))
+fn left_out_objects(doc: &Document, p: &Paragraph, show_hidden: bool, hide_deleted: bool) -> impl Fn(usize) -> bool {
+    let mut left = Vec::new();
+    // Nothing can be left out with hidden text shown and markup on.
+    if (hide_deleted || !show_hidden) && !p.objects.is_empty() {
+        let style = p.props.style.as_deref();
+        let is_left = |c: &CharProps| para::left_out(&doc.styles.resolve_char(style, c), show_hidden, hide_deleted);
+        // Runs and objects are both in order: one walk finds each object's run (past the last run,
+        // the paragraph mark, as `props_of_char` gives), resolving a run's formatting only once.
+        let mut runs = p.run_ranges().peekable();
+        let mut last: Option<(usize, bool)> = None;
+        for off in p.object_offsets() {
+            while runs.next_if(|(r, _)| r.end <= off).is_some() {}
+            let l = match runs.peek() {
+                Some((r, c)) => match last {
+                    Some((end, l)) if end == r.end => l,
+                    _ => {
+                        let l = is_left(c);
+                        last = Some((r.end, l));
+                        l
+                    }
+                },
+                None => is_left(&p.mark),
+            };
+            left.push(l);
+        }
+    }
+    move |k| left.get(k).copied().unwrap_or(false)
 }
 
 /// Note part ids in document order → numbers (footnotes and endnotes numbered separately). With

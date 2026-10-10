@@ -202,6 +202,54 @@ fn hidden_separators_with_automatic_hyphenation_lay_out_in_linear_time() {
 }
 
 #[test]
+fn many_hidden_float_anchors_lay_out_in_linear_time() {
+    // n square-wrapped shapes, each anchored in its own hidden run (bold alternating, so runs do not
+    // merge), markup on: finding each anchor's formatting once rescanned the runs from the start.
+    let doc = |n: usize| {
+        let float = wordcraft_doc::para::Float {
+            wrap: wordcraft_doc::para::Wrap::Square,
+            h_rel: wordcraft_doc::para::Anchor::Column,
+            v_rel: wordcraft_doc::para::Anchor::Paragraph,
+            x: 0.0,
+            y: 0.0,
+            dist: 9.0,
+        };
+        let shape = InlineObject::Shape {
+            kind: wordcraft_doc::para::ShapeKind::Rectangle,
+            w: 20.0,
+            h: 20.0,
+            fill: None,
+            stroke: None,
+            stroke_width: 1.0,
+            float,
+            story: None,
+        };
+        let obj = wordcraft_doc::para::OBJ.to_string();
+        let mut p = wordcraft_doc::Paragraph::with_text("Text ", Default::default());
+        p.text.push_str(&obj.repeat(n));
+        p.objects = vec![shape; n];
+        p.runs = std::iter::once(wordcraft_doc::Run { len: 5, props: Default::default() })
+            .chain((0..n).map(|i| wordcraft_doc::Run {
+                len: obj.len(),
+                props: wordcraft_doc::CharProps { hidden: Some(true), bold: Some(i % 2 == 0), ..Default::default() },
+            }))
+            .collect();
+        let mut d = Document::from_text("");
+        d.body = vec![wordcraft_doc::para_block(p)];
+        d
+    };
+    // Correct first: hidden anchors place no shape, shown ones do.
+    let shapes = |show_hidden: bool| {
+        let l = layout(&doc(50), &mut LayoutCache::new(), &LayoutOptions { show_hidden, ..Default::default() });
+        l.pages.iter().flat_map(|p| p.items.iter()).filter(|i| matches!(i, Placed::Shape { .. })).count()
+    };
+    assert_eq!((shapes(false), shapes(true)), (0, 50));
+    let (t1, t4, ratio) = layout_time_ratio(doc, 10_000, &LayoutOptions::default());
+    eprintln!("t(n) {t1:.4} s, t(4n) {t4:.4} s, ratio {ratio:.1}");
+    assert!(ratio < 8.0, "4x the anchors took {ratio:.1}x the time ({t1:.4} s → {t4:.4} s): not linear");
+}
+
+#[test]
 fn fragmented_hidden_text_lays_out_like_the_visible_text() {
     // Visible words with a hidden multi-byte char after every visible one, formatted in alternating
     // runs (bold on and off) so no two left-out runs are adjacent or merge.

@@ -46,8 +46,9 @@ pub struct Services {
     pub open_async: Option<Box<dyn Fn(&str)>>,
     /// Web: files (name, bytes) delivered asynchronously (picker, drag and drop).
     pub inbox: Option<Inbox>,
-    /// Web: hand bytes to the browser as a download.
-    pub download: Option<Box<dyn Fn(&str, &[u8])>>,
+    /// Web: hand bytes to the browser as a download. An error means no download started (the
+    /// browser can't tell the page whether the user then kept the file).
+    pub download: Option<Box<dyn Fn(&str, &[u8]) -> Result<(), String>>>,
     /// Web: told whether the document has unsaved changes after each pass, for the browser's
     /// leave-page guard (`beforeunload` runs between frames and can't ask the app).
     pub on_dirty: Option<Box<dyn Fn(bool)>>,
@@ -221,8 +222,13 @@ impl WordApp {
             let name = params.get("path").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| format!("{}.docx", self.title_stem()));
             let name = if id == "file.exportPdf" && !name.ends_with(".pdf") { format!("{name}.pdf") } else { name };
             let bytes = wordcraft_engine::io::save_bytes(&name, &self.session.doc)?;
-            if let Some(d) = &self.services.download {
-                d(&name, &bytes);
+            if let Some(d) = &self.services.download
+                && let Err(e) = d(&name, &bytes)
+            {
+                let msg = i18n::fmt(tl!("Couldn't download {name}: {error}"), &[("name", &name), ("error", &e)]);
+                log::error!("download of {name} failed: {e}");
+                self.status(msg.clone());
+                return Err(msg);
             }
             // An export is a copy, and so is a save in a format that doesn't keep everything (a
             // page image, plain text): the document itself still has unsaved changes.
@@ -1029,14 +1035,33 @@ mod tests {
     fn web_downloads_that_drop_content_leave_the_document_unsaved() {
         for name in ["novel.png", "novel.txt", "novel.md"] {
             let mut a = typed();
-            a.services.download = Some(Box::new(|_, _| {}));
+            a.services.download = Some(Box::new(|_, _| Ok(())));
             a.execute("file.saveAs", json!({"path": name})).unwrap();
             assert!(a.session.dirty, "{name}");
         }
         let mut a = typed();
-        a.services.download = Some(Box::new(|_, _| {}));
+        a.services.download = Some(Box::new(|_, _| Ok(())));
         a.execute("file.saveAs", json!({"path": "novel.docx"})).unwrap();
         assert!(!a.session.dirty);
+    }
+
+    /// Web: the download callback couldn't report a failure, so Save marked the document saved
+    /// and the prompt went ahead even when no download started.
+    #[test]
+    fn a_failed_download_is_not_a_save() {
+        let mut a = typed();
+        a.services.download = Some(Box::new(|_, _| Err("blocked by the browser".into())));
+        assert!(a.execute("file.save", json!({})).is_err());
+        assert!(a.session.dirty);
+
+        a.run("file.new", json!({})).unwrap();
+        a.status_msg = None;
+        let r = a.run("ui.saveChanges", json!({"answer": "save"})).unwrap();
+        assert_eq!(r["done"], false, "the New was cancelled");
+        assert!(body_text(&a).contains(UNSAVED));
+        assert!(a.session.dirty);
+        let msg = a.status_msg.as_ref().map(|(m, _)| m.clone()).unwrap_or_default();
+        assert!(msg.contains("blocked by the browser"), "the status bar says why: {msg:?}");
     }
 
     /// A new document has no path: Save goes through Save As, and cancelling that cancels the New.

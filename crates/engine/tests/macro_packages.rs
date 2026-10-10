@@ -304,3 +304,111 @@ fn unreadable_vba_relationships_keep_the_project() {
         assert_package_consistent(&out);
     }
 }
+
+/// VBA signature parts (legacy, Agile, V3): relationship type, part, content type. Legacy is from
+/// Microsoft's Open XML Package Editor (KnownPackageInfo.cs); Agile and V3 as EPPlus writes them.
+const SIGNATURES: &[(&str, &str, &str)] = &[
+    (
+        "http://schemas.microsoft.com/office/2006/relationships/vbaProjectSignature",
+        "word/vbaProjectSignature.bin",
+        "application/vnd.ms-office.vbaProjectSignature",
+    ),
+    (
+        "http://schemas.microsoft.com/office/2014/relationships/vbaProjectSignatureAgile",
+        "word/vbaProjectSignatureAgile.bin",
+        "application/vnd.ms-office.vbaProjectSignatureAgile",
+    ),
+    (
+        "http://schemas.microsoft.com/office/2020/07/relationships/vbaProjectSignatureV3",
+        "word/vbaProjectSignatureV3.bin",
+        "application/vnd.ms-office.vbaProjectSignatureV3",
+    ),
+];
+
+/// A signed macro package: [`docm_package`] plus the three signature parts the project relates to.
+fn signed_package(vba: &[u8], main_ct: &str) -> BTreeMap<String, Vec<u8>> {
+    let mut files = unzip(&docm_package(vba, main_ct));
+    let mut rels = text(&files, "word/_rels/vbaProject.bin.rels");
+    let mut ct = text(&files, "[Content_Types].xml");
+    for (i, (kind, part, ctype)) in SIGNATURES.iter().enumerate() {
+        let target = part.trim_start_matches("word/");
+        rels = rels.replace("</Relationships>", &format!(r#"<Relationship Id="rIdSig{i}" Type="{kind}" Target="{target}"/></Relationships>"#));
+        ct = ct.replace("</Types>", &format!(r#"<Override PartName="/{part}" ContentType="{ctype}"/></Types>"#));
+        files.insert(part.to_string(), format!("signature {i}: PKCS#7 stand-in").into_bytes());
+    }
+    files.insert("word/_rels/vbaProject.bin.rels".into(), rels.into_bytes());
+    files.insert("[Content_Types].xml".into(), ct.into_bytes());
+    files
+}
+
+#[test]
+fn vba_signatures_survive_save() {
+    let vba = fake_vba();
+    for (ext, main_ct) in [("docm", CT_DOCM), ("dotm", CT_DOTM)] {
+        let src = signed_package(&vba, main_ct);
+        let name = format!("s.{ext}");
+        let mut pkg = zip(&src);
+        for generation in 1..=2 {
+            let out = unzip(&save_bytes(&name, &open_bytes(&name, &pkg).expect("open")).expect("save"));
+            let vba_rels = text(&out, "word/_rels/vbaProject.bin.rels");
+            for (kind, part, ctype) in SIGNATURES {
+                assert!(out.get(*part) == src.get(*part), "{name} gen {generation}: {part} must survive byte for byte");
+                assert_eq!(content_type(&out, &format!("/{part}")).as_deref(), Some(*ctype), "{name} gen {generation}: {part}");
+                let target = part.trim_start_matches("word/");
+                assert!(vba_rels.contains(&format!(r#"Type="{kind}" Target="{target}""#)), "{name} gen {generation}: {vba_rels}");
+            }
+            assert!(out.get("word/vbaProject.bin") == Some(&vba));
+            assert_eq!(text(&out, "word/vbaData.xml"), VBA_DATA);
+            assert_eq!(content_type(&out, "/word/vbaData.xml").as_deref(), Some(CT_VBA_DATA));
+            assert_package_consistent(&out);
+            pkg = zip(&out);
+        }
+    }
+    // A macro-free package drops the whole VBA set cleanly.
+    let doc = open_bytes("s.docm", &zip(&signed_package(&vba, CT_DOCM))).expect("open");
+    for name in ["s.docx", "s.dotx"] {
+        let out = unzip(&save_bytes(name, &doc).expect("save"));
+        assert!(!out.keys().any(|k| k.contains("vba")), "{name}: {:?}", out.keys());
+        assert!(!text(&out, "[Content_Types].xml").contains("vba"), "{name}");
+        assert_package_consistent(&out);
+    }
+}
+
+#[test]
+fn vba_related_parts_are_bounded_and_never_shadow_ours() {
+    let vba = fake_vba();
+    let mut files = unzip(&docm_package(&vba, CT_DOCM));
+    let mut rels = text(&files, "word/_rels/vbaProject.bin.rels");
+    let mut add = |id: &str, kind: &str, target: &str| {
+        rels = rels.replace("</Relationships>", &format!(r#"<Relationship Id="{id}" Type="{kind}" Target="{target}"/></Relationships>"#));
+    };
+    // Targets that are parts WordCraft writes itself, or live outside word/.
+    add("rS", "urn:x:clash", "styles.xml");
+    add("rD", "urn:x:clash", "document.xml");
+    add("rR", "urn:x:clash", "_rels/document.xml.rels");
+    add("rC", "urn:x:clash", "../docProps/core.xml");
+    // One part under two relationship types.
+    add("rT", "urn:x:second", "vbaData.xml");
+    // An absurd number of related parts.
+    for i in 0..300 {
+        add(&format!("rN{i}"), "urn:x:many", &format!("extra{i}.bin"));
+    }
+    for i in 0..300 {
+        files.insert(format!("word/extra{i}.bin"), vec![i as u8; 3]);
+    }
+    files.insert("word/_rels/vbaProject.bin.rels".into(), rels.into_bytes());
+    let doc = open_bytes("m.docm", &zip(&files)).expect("open");
+    let fresh = unzip(&save_bytes("m.docx", &Document::from_text("x")).expect("save"));
+    let out = unzip(&save_bytes("m.docm", &doc).expect("save"));
+
+    let vba_rels = text(&out, "word/_rels/vbaProject.bin.rels");
+    for t in ["styles.xml", "document.xml", "_rels/document.xml.rels", "../docProps/core.xml"] {
+        assert!(!vba_rels.contains(&format!("Target=\"{t}\"")), "{t}: {vba_rels}");
+    }
+    assert_eq!(out.get("word/styles.xml").map(Vec::len), fresh.get("word/styles.xml").map(Vec::len), "our styles part is not shadowed");
+    assert!(vba_rels.contains(r#"Type="urn:x:second" Target="vbaData.xml""#) && vba_rels.contains(REL_VBA_DATA), "{vba_rels}");
+    assert_eq!(out.keys().filter(|k| *k == "word/vbaData.xml").count(), 1);
+    let extras = out.keys().filter(|k| k.starts_with("word/extra")).count();
+    assert!((1..=64).contains(&extras), "{extras} extra parts carried");
+    assert_package_consistent(&out);
+}

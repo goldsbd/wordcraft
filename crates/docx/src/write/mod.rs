@@ -9,7 +9,7 @@ use wordcraft_doc::numbering::LevelSuffix;
 use wordcraft_doc::styles::{Style, StyleKind};
 use wordcraft_doc::{Blocks, Document, PartKind};
 
-use crate::package::{VBA_DATA_PART, VBA_PROJECT_PART, rt, zip_entries};
+use crate::package::{MAX_VBA_RELATED, VBA_PROJECT_PART, VBA_RELATED, rt, zip_entries};
 use crate::xml::{self, W};
 use crate::{DocxError, Flavor};
 
@@ -292,14 +292,32 @@ pub fn write_as(doc: &Document, flavor: Flavor) -> Result<Vec<u8>, DocxError> {
         }
     }
 
-    // The macro project and its VBA data, verbatim. A macro-free package can't hold them (Word
-    // drops them too).
+    // The macro project and the parts it relates to (VBA data, signatures…), verbatim. A
+    // macro-free package can't hold them (Word drops them too).
     if let Some(vba) = doc.passthrough.get(VBA_PROJECT_PART).filter(|b| !b.is_empty()) {
         if flavor.macros() {
             let mut vba_rels = PartRels::default();
-            if let Some(data) = doc.passthrough.get(VBA_DATA_PART) {
-                vba_rels.add(rt::VBA_DATA, "vbaData.xml", false);
-                push_part(&mut entries, &mut overrides, VBA_DATA_PART, data.to_vec(), "application/vnd.ms-word.vbaData+xml", PartRels::default());
+            let manifest = doc.passthrough.get(VBA_RELATED).map(|m| String::from_utf8_lossy(m).into_owned()).unwrap_or_default();
+            let mut written: Vec<String> = Vec::new();
+            for line in manifest.lines().take(MAX_VBA_RELATED) {
+                let mut f = line.split('\t');
+                let (Some(kind), Some(path), Some(ct), None) = (f.next(), f.next(), f.next(), f.next()) else { continue };
+                let Some(target) = path.strip_prefix("word/").filter(|t| !t.is_empty()) else { continue };
+                let Some(bytes) = doc.passthrough.get(path) else { continue };
+                let ours = written.iter().any(|w| w.eq_ignore_ascii_case(path));
+                // Never shadow a part this writer produces (a hostile relationship may point at one).
+                let clash = path.eq_ignore_ascii_case("word/document.xml")
+                    || path.eq_ignore_ascii_case(VBA_PROJECT_PART)
+                    || path.to_ascii_lowercase().ends_with(".rels")
+                    || entries.iter().any(|(n, _)| n.eq_ignore_ascii_case(path));
+                if clash && !ours {
+                    continue;
+                }
+                vba_rels.add(kind, target, false);
+                if !ours {
+                    push_part(&mut entries, &mut overrides, path, bytes.to_vec(), ct, PartRels::default());
+                    written.push(path.to_string());
+                }
             }
             rels.add(rt::VBA_PROJECT, "vbaProject.bin", false);
             push_part(&mut entries, &mut overrides, VBA_PROJECT_PART, vba.to_vec(), "application/vnd.ms-office.vbaProject", vba_rels);

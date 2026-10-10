@@ -288,6 +288,50 @@ fn hidden_heading_text_stays_out_of_bookmarks_and_tags() {
 }
 
 #[test]
+fn long_fragmented_hidden_headings_export_in_linear_time() {
+    // Headings of n chars in one-char runs: all hidden with bold alternating, and hidden and visible
+    // alternating. Layout and the bookmark/tag titles once scanned every left-out range for every
+    // char, quadratic in n. Machine-independent: the time for 4n against n, linear ~4, quadratic ~16.
+    let doc = |n: usize| {
+        let heading = |visible_every_other: bool| {
+            let mut h = Paragraph::with_text(&"abcdefg ".repeat(n / 8), CharProps::default()).styled("Heading1");
+            h.runs = (0..n)
+                .map(|i| {
+                    let hidden = !(visible_every_other && i % 2 == 1);
+                    wordcraft_doc::Run { len: 1, props: CharProps { hidden: Some(hidden), bold: Some(i % 4 < 2), ..Default::default() } }
+                })
+                .collect();
+            para_block(h)
+        };
+        let mut d = Document::new();
+        d.body = vec![heading(false), heading(true), para_block(Paragraph::with_text("After", CharProps::default()))];
+        d
+    };
+    let opts = PdfOptions { compress: false, ..Default::default() };
+    // The fastest of a few runs, after a warm-up, so one slow run on a busy machine counts less.
+    let fastest = |d: &Document| {
+        (0..3)
+            .map(|_| {
+                let t = std::time::Instant::now();
+                export(d, &opts).unwrap();
+                t.elapsed().as_secs_f64()
+            })
+            .fold(f64::INFINITY, f64::min)
+    };
+    let n = 25_000;
+    let (small, big) = (doc(n), doc(4 * n));
+    export(&small, &opts).unwrap();
+    let (t1, t4) = (fastest(&small), fastest(&big));
+    let ratio = t4 / t1.max(1e-9);
+    eprintln!("t(n) {t1:.3} s, t(4n) {t4:.3} s, ratio {ratio:.1}");
+    assert!(ratio < 8.0, "4x the text took {ratio:.1}x the time ({t1:.3} s → {t4:.3} s): not linear");
+    let pdf = String::from_utf8_lossy(&export(&big, &opts).unwrap()).into_owned();
+    // The all-hidden heading has no bookmark; the other is titled with its visible chars only.
+    assert!(!pdf.contains("abcd"), "hidden heading text in a title");
+    assert!(pdf.contains("bdf bdf"), "no title for the half-visible heading");
+}
+
+#[test]
 fn table_style_hidden_heading_text_stays_out_of_bookmarks_and_tags() {
     // Hidden by the table style's header row, so only the layout's resolution (table conditional
     // formatting under the runs' own) says the text is hidden.

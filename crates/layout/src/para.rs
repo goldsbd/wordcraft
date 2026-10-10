@@ -370,13 +370,16 @@ pub fn layout_para(p: &Paragraph, env: &ParaEnv) -> ParaLayout {
         .filter(|c| !matches!(*c, '\t' | LINE_BREAK | PAGE_BREAK | COLUMN_BREAK | OBJ | '\r' | ' '))
         .filter(|c| p.text.len() > c.len_utf8());
     let mut drop_cap = None;
-    // The byte ranges of runs left out of the layout.
+    // The byte ranges of runs left out of the layout, in order, adjacent runs merged.
     let mut left: Vec<std::ops::Range<usize>> = Vec::new();
     for (range, props) in p.run_ranges() {
         let rc = resolve(props);
         let Some(text) = p.text.get(range.clone()) else { continue };
         if left_out(&rc, b.env.show_hidden, b.env.hide_deleted) {
-            left.push(range.clone());
+            match left.last_mut() {
+                Some(last) if last.end == range.start => last.end = range.end,
+                _ => left.push(range.clone()),
+            }
             let si = b.style(&rc, None, false);
             let g = b.glyphs.len() as u32;
             // Word still prints the note of a hidden reference mark (and numbers it); a deleted
@@ -511,7 +514,13 @@ pub fn layout_para(p: &Paragraph, env: &ParaEnv) -> ParaLayout {
         (p.text.as_str().into(), Vec::new())
     } else {
         let (mut text, mut ends) = (String::new(), Vec::new());
-        for (i, c) in p.text.char_indices().filter(|(i, _)| !left.iter().any(|r| r.contains(i))) {
+        let mut next = left.iter().peekable();
+        for (i, c) in p.text.char_indices() {
+            // `left` is in order: skip the ranges that end here, then is `i` in the next one?
+            while next.next_if(|r| r.end <= i).is_some() {}
+            if next.peek().is_some_and(|r| r.start <= i) {
+                continue;
+            }
             text.push(c);
             ends.push((text.len(), i + c.len_utf8()));
         }

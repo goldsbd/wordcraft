@@ -166,6 +166,55 @@ fn hidden_text_adds_no_line_break_opportunity_when_not_shown() {
 }
 
 #[test]
+fn fragmented_hidden_text_lays_out_like_the_visible_text() {
+    // Visible words with a hidden multi-byte char after every visible one, formatted in alternating
+    // runs (bold on and off) so no two left-out runs are adjacent or merge.
+    let words = "Hyphenation wraps international words across narrow columns of text ".repeat(6);
+    let mut d = Document::from_text("");
+    d.settings.auto_hyphenation = true;
+    let mut text = String::new();
+    let mut kept = Vec::new();
+    for (i, c) in words.chars().enumerate() {
+        kept.push(text.len());
+        text.push(c);
+        let at = text.len();
+        text.push('é');
+        let n = d.para(StoryRef::Body, &Path::top(0)).unwrap().len();
+        let bold = wordcraft_doc::CharProps { bold: Some(i % 2 == 0), ..Default::default() };
+        d.insert_text(&Pos::body(0, n), &c.to_string(), &bold).unwrap();
+        let hidden = wordcraft_doc::CharProps { hidden: Some(true), bold: Some(i % 2 == 1), ..Default::default() };
+        d.insert_text(&Pos::body(0, at), "é", &hidden).unwrap();
+    }
+    assert_eq!(d.para(StoryRef::Body, &Path::top(0)).unwrap().text, text);
+    let mut plain = Document::from_text(&words);
+    plain.settings.auto_hyphenation = true;
+    for doc in [&mut d, &mut plain] {
+        doc.format_paragraphs(&Pos::body(0, 0), &Pos::body(0, 0), &|p| p.indent_right = Some(468.0 - 90.0)).unwrap();
+    }
+    // Line starts and hyphenation points, as paragraph offsets.
+    let shape = |d: &Document| {
+        let l = layout(d, &mut LayoutCache::new(), &LayoutOptions::default());
+        let paras: Vec<_> = l
+            .pages
+            .iter()
+            .flat_map(|p| p.items.iter())
+            .filter_map(|i| if let Placed::Lines { para, .. } = i { Some(para.clone()) } else { None })
+            .collect();
+        let para = &paras[0];
+        let starts: Vec<usize> = para.lines.iter().map(|l| para.clusters.get(l.c0).map_or(usize::MAX, |c| c.start)).collect();
+        let hyph: Vec<usize> = para.hyph_after.iter().map(|k| para.clusters[*k as usize].end).collect();
+        (starts, hyph)
+    };
+    let (starts, hyph) = shape(&plain);
+    assert!(starts.len() > 5 && !hyph.is_empty(), "{starts:?} {hyph:?}");
+    // Mapped to the fragmented paragraph: a line starts after the previous visible char (with the
+    // hidden one that follows it, which takes no room), a hyphen point is after its char.
+    let want_starts: Vec<usize> = starts.iter().map(|s| if *s == 0 { 0 } else { kept[s - 1] + 1 }).collect();
+    let want_hyph: Vec<usize> = hyph.iter().map(|e| kept[e - 1] + 1).collect();
+    assert_eq!(shape(&d), (want_starts, want_hyph));
+}
+
+#[test]
 fn automatic_hyphenation_sees_only_the_text_laid_out() {
     // Paragraph-text ends of the clusters after which a line may end with a hyphen.
     let hyph_ends = |d: &Document, opts: &LayoutOptions| {

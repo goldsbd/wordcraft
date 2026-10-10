@@ -178,7 +178,8 @@ pub struct Exclusion {
 struct Builder<'a> {
     env: &'a ParaEnv<'a>,
     styles: Vec<StyleRun>,
-    style_index: std::collections::HashMap<(String, u32), u16>,
+    /// Hash of a style's format → (index in `styles`, small caps), see `style`.
+    style_index: std::collections::HashMap<u64, Vec<(u16, bool)>>,
     glyphs: Vec<Glyph>,
     clusters: Vec<Cluster>,
     /// Text drawn by clusters that stand for an object, by cluster index (see `ParaLayout::shown`).
@@ -192,9 +193,26 @@ impl<'a> Builder<'a> {
         let face = face_override.unwrap_or(r.face);
         // The display list reads every run's format (link target, strike kind, underline colour,
         // baseline shift…) from its StyleRun, so runs share one only when their formats are equal.
-        let key = (format!("{rc:?}|{small}"), face.id());
-        if let Some(i) = self.style_index.get(&key) {
-            return *i;
+        // Keyed by a hash of the commonly varying fields (no allocation: this runs for every shaped
+        // piece), then confirmed by comparing whole formats within the bucket.
+        let key = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            (face.id(), small, &rc.font, rc.size.to_bits(), rc.bold, rc.italic, rc.color, rc.highlight, rc.shading).hash(&mut h);
+            (rc.underline_color, rc.strike, rc.double_strike, &rc.link, rc.ins, rc.del, rc.hidden).hash(&mut h);
+            h.finish()
+        };
+        let bucket = self.style_index.entry(key).or_default();
+        // Formats that never compare equal (a NaN from a hostile file) get their own styles; a capped
+        // scan keeps such a bucket from turning quadratic.
+        for &(i, s) in bucket.iter().rev().take(64) {
+            if s == small
+                && let Some(st) = self.styles.get(i as usize)
+                && st.face.id() == face.id()
+                && (Arc::ptr_eq(&st.rc, rc) || *st.rc == **rc)
+            {
+                return i;
+            }
         }
         let size = rc.draw_size() * if small { 0.8 } else { 1.0 };
         let (a, d) = wordcraft_fonts::word::line_metrics(&face);
@@ -211,7 +229,7 @@ impl<'a> Builder<'a> {
         };
         let i = self.styles.len().min(u16::MAX as usize) as u16;
         self.styles.push(st);
-        self.style_index.insert(key, i);
+        self.style_index.entry(key).or_default().push((i, small));
         i
     }
 

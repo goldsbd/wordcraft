@@ -1552,3 +1552,25 @@ fn no_line_break_right_after_a_slash() {
     }
     assert!(lines > 10, "{lines} lines");
 }
+
+#[test]
+fn unequal_formats_lay_out_in_linear_time() {
+    // Runs whose formats never compare equal (NaN spacing from a hostile file) each get a style;
+    // finding a run's style must not compare it against every earlier one.
+    let doc = |n: usize| {
+        let mut p = wordcraft_doc::Paragraph::with_text("", Default::default());
+        p.text = "ab ".repeat(n);
+        p.runs = (0..n)
+            .map(|i| wordcraft_doc::Run {
+                len: 3,
+                props: wordcraft_doc::CharProps { spacing: Some(f32::NAN), bold: Some(i % 2 == 0), ..Default::default() },
+            })
+            .collect();
+        let mut d = Document::from_text("");
+        d.body = vec![wordcraft_doc::para_block(p)];
+        d
+    };
+    let (t1, t4, ratio) = layout_time_ratio(doc, 5_000, &LayoutOptions::default());
+    eprintln!("t(n) {t1:.4} s, t(4n) {t4:.4} s, ratio {ratio:.1}");
+    assert!(ratio < 8.0, "4x the runs took {ratio:.1}x the time ({t1:.4} s → {t4:.4} s): not linear");
+}

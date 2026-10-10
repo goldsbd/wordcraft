@@ -12,6 +12,11 @@ fn ext_of(name: &str) -> String {
     lower.rsplit('.').next().unwrap_or("").to_string()
 }
 
+/// Is `ext` one of Word's package formats (.docx/.docm/.dotx/.dotm), which save without loss?
+pub fn is_word_package(ext: &str) -> bool {
+    wordcraft_docx::Flavor::from_ext(ext).is_some()
+}
+
 /// Parse a document from bytes; `name` gives the format by extension.
 pub fn open_bytes(name: &str, bytes: &[u8]) -> Result<Document, String> {
     let ext = ext_of(name);

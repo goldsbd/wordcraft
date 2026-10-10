@@ -116,7 +116,14 @@ impl Package {
         let (dir, file) = split_dir(part);
         let path = if dir.is_empty() { format!("_rels/{file}.rels") } else { format!("{dir}/_rels/{file}.rels") };
         let mut rels = Rels::default();
-        let Ok(Some(root)) = self.xml(&path) else { return rels };
+        let root = match self.xml(&path) {
+            Ok(Some(root)) => root,
+            Ok(None) => return rels,
+            Err(e) => {
+                log::warn!("docx: ignoring unreadable relationships {path}: {e}");
+                return rels;
+            }
+        };
         for r in root.els().filter(|e| e.local() == "Relationship") {
             let (Some(id), Some(target)) = (r.attr("Id"), r.attr("Target")) else { continue };
             let external = r.attr("TargetMode").is_some_and(|m| m.eq_ignore_ascii_case("External"));

@@ -267,3 +267,40 @@ fn vba_data_relationship_to_a_missing_part_is_not_written() {
     assert!(!out.contains_key("word/_rels/vbaProject.bin.rels"), "no relationship to a part we don't have");
     assert_package_consistent(&out);
 }
+
+fn utf16(s: &str, big_endian: bool) -> Vec<u8> {
+    let bom: [u8; 2] = if big_endian { [0xFE, 0xFF] } else { [0xFF, 0xFE] };
+    let units = s.replace("UTF-8", "UTF-16");
+    bom.into_iter().chain(units.encode_utf16().flat_map(|u| if big_endian { u.to_be_bytes() } else { u.to_le_bytes() })).collect()
+}
+
+#[test]
+fn utf16_vba_relationships_still_find_the_vba_data() {
+    let vba = fake_vba();
+    let base = unzip(&docm_package(&vba, CT_DOCM));
+    for big_endian in [false, true] {
+        let mut files = base.clone();
+        let rels = utf16(&text(&files, "word/_rels/vbaProject.bin.rels"), big_endian);
+        files.insert("word/_rels/vbaProject.bin.rels".into(), rels);
+        let out = resave_docm(&files);
+        assert_eq!(text(&out, "word/vbaData.xml"), VBA_DATA, "big endian {big_endian}");
+        let vba_rels = text(&out, "word/_rels/vbaProject.bin.rels");
+        assert!(vba_rels.contains(REL_VBA_DATA) && vba_rels.contains("Target=\"vbaData.xml\""), "{vba_rels}");
+        assert!(out.get("word/vbaProject.bin") == Some(&vba));
+        assert_package_consistent(&out);
+    }
+}
+
+#[test]
+fn unreadable_vba_relationships_keep_the_project() {
+    let vba = fake_vba();
+    let base = unzip(&docm_package(&vba, CT_DOCM));
+    let odd_utf16 = [0xFF, 0xFE, b'<', 0, 0x00, 0xD8, b'a'].to_vec(); // unpaired surrogate, odd length
+    for (label, rels) in [("garbage", b"<Relationships <<< \x00".to_vec()), ("odd utf-16", odd_utf16), ("empty", Vec::new())] {
+        let mut files = base.clone();
+        files.insert("word/_rels/vbaProject.bin.rels".into(), rels);
+        let out = resave_docm(&files);
+        assert!(out.get("word/vbaProject.bin") == Some(&vba), "{label}: the project is kept");
+        assert_package_consistent(&out);
+    }
+}

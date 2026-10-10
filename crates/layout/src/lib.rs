@@ -290,11 +290,12 @@ impl Ctx<'_> {
     }
 }
 
-/// Which of `p`'s objects (by index) are tracked deletions the layout leaves out: none unless
-/// `hide_deleted`.
-fn deleted_objects(p: &Paragraph, hide_deleted: bool) -> impl Fn(usize) -> bool + '_ {
-    let offs = if hide_deleted { p.object_offsets() } else { Vec::new() };
-    move |k| offs.get(k).is_some_and(|off| p.props_of_char(*off).del.is_some())
+/// Which of `p`'s objects (by index) the layout leaves out ([`para::left_out`]): anchored in hidden
+/// text unless `show_hidden`, or in a tracked deletion with `hide_deleted`.
+fn left_out_objects<'a>(doc: &'a Document, p: &'a Paragraph, show_hidden: bool, hide_deleted: bool) -> impl Fn(usize) -> bool + 'a {
+    let offs = if hide_deleted || !show_hidden { p.object_offsets() } else { Vec::new() };
+    let style = p.props.style.as_deref();
+    move |k| offs.get(k).is_some_and(|off| para::left_out(&doc.styles.resolve_char(style, p.props_of_char(*off)), show_hidden, hide_deleted))
 }
 
 /// Note part ids in document order → numbers (footnotes and endnotes numbered separately). With
@@ -304,7 +305,8 @@ fn note_numbers(doc: &Document, hide_deleted: bool) -> HashMap<u32, u32> {
     let (mut f, mut e) = (0u32, 0u32);
     for path in doc.para_paths(StoryRef::Body) {
         if let Some(p) = doc.para(StoryRef::Body, &path) {
-            let deleted = deleted_objects(p, hide_deleted);
+            // A hidden reference mark still takes its number, as in Word; a deleted one does not.
+            let deleted = left_out_objects(doc, p, true, hide_deleted);
             for (k, o) in p.objects.iter().enumerate() {
                 if deleted(k) {
                     continue;
@@ -793,12 +795,13 @@ fn place_para(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block: usize, 
     let y0 = pb.y + ctx.doc.styles.resolve_para(&p.props).space_before;
     let mut float_rects: HashMap<usize, Rect> = HashMap::new();
     if !pb.web {
-        // A deleted object is not placed in the final text, so it takes no room either.
-        let deleted = deleted_objects(p, ctx.opts.hide_deleted);
+        // An object left out of the layout (hidden, or deleted in the final text) is not placed, so
+        // it takes no room either.
+        let left_out = left_out_objects(ctx.doc, p, ctx.opts.show_hidden, ctx.opts.hide_deleted);
         for (oi, o) in p.objects.iter().enumerate() {
             if let InlineObject::Image { w, h, float, .. } | InlineObject::Shape { w, h, float, .. } = o
                 && float.wrap != Wrap::Inline
-                && !deleted(oi)
+                && !left_out(oi)
             {
                 let r = float_rect(pb, col_x, y0, *w, *h, float);
                 float_rects.insert(oi, r);

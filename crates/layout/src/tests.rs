@@ -566,6 +566,54 @@ fn deleted_float_leaves_no_wrap_area_without_markup() {
 }
 
 #[test]
+fn hidden_float_leaves_no_wrap_area_when_hidden_text_is_not_shown() {
+    // A square-wrapped shape whose anchor is hidden text, through a character style (so only the
+    // resolved formatting says so). Measured in Word: not printed, and the text runs full width.
+    let text = "Words flow around the picture here. ".repeat(30);
+    let mut d = Document::from_text(&text);
+    d.styles.upsert(wordcraft_doc::Style {
+        id: "Secret".into(),
+        name: "Secret".into(),
+        kind: wordcraft_doc::StyleKind::Character,
+        chr: wordcraft_doc::CharProps { hidden: Some(true), ..Default::default() },
+        ..Default::default()
+    });
+    let float = wordcraft_doc::para::Float {
+        wrap: wordcraft_doc::para::Wrap::Square,
+        h_rel: wordcraft_doc::para::Anchor::Column,
+        v_rel: wordcraft_doc::para::Anchor::Paragraph,
+        x: 0.0,
+        y: 0.0,
+        dist: 9.0,
+    };
+    let shape = InlineObject::Shape {
+        kind: wordcraft_doc::para::ShapeKind::Rectangle,
+        w: 144.0,
+        h: 100.0,
+        fill: None,
+        stroke: None,
+        stroke_width: 1.0,
+        float,
+        story: None,
+    };
+    d.insert_object(&Pos::body(0, 0), shape, &Default::default()).unwrap();
+    let obj = wordcraft_doc::para::OBJ.len_utf8();
+    d.format_range(&Pos::body(0, 0), &Pos::body(0, obj), &|c| c.style = Some("Secret".into())).unwrap();
+    // Where the first line starts, and whether the shape is placed.
+    let first = |show_hidden: bool| {
+        let l = layout(&d, &mut LayoutCache::new(), &LayoutOptions { show_hidden, ..Default::default() });
+        let p = &l.pages[0];
+        let Some(Placed::Lines { para, .. }) = p.items.iter().find(|i| matches!(i, Placed::Lines { .. })) else { panic!() };
+        (para.lines[0].left, p.items.iter().any(|i| matches!(i, Placed::Shape { .. })))
+    };
+    // Hidden text shown: the shape is placed and the text flows beside it.
+    let (left, shown) = first(true);
+    assert!(left >= 144.0 && shown, "{left} {shown}");
+    // Not shown: no shape, and no gap where it was.
+    assert_eq!(first(false), (0.0, false));
+}
+
+#[test]
 fn line_numbers_borders_text_boxes() {
     let mut d = Document::from_text("one\ntwo\nthree");
     d.last_section.line_numbers = Some(Default::default());

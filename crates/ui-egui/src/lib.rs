@@ -198,9 +198,9 @@ impl WordApp {
         }
     }
 
-    /// Run a command the user asked for (ribbon, shortcut, Backstage, file drop). New, Open and
-    /// Close on a document with unsaved changes first ask Save / Don't Save / Cancel, and the
-    /// command runs once that is answered (`ui.saveChanges`).
+    /// Run a command the user asked for (ribbon, shortcut, Backstage, file drop). New, Open,
+    /// Close, Envelopes, Labels and Finish & Merge on a document with unsaved changes first ask
+    /// Save / Don't Save / Cancel, and the command runs once that is answered (`ui.saveChanges`).
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
         if self.session.dirty && discards_document(id, &params) {
             let name =
@@ -282,9 +282,10 @@ impl WordApp {
         self.execute(&then, params).map(|r| json!({"done": true, "result": r}))
     }
 
-    /// Save before New/Open/Close: true once the document is safely written. A save in a format
-    /// that doesn't keep everything (a page image, plain text) writes a copy and leaves the
-    /// document unsaved, so it doesn't count: the command is cancelled and the document stays.
+    /// Save before New/Open/Close (and the mailings that replace the document): true once the
+    /// document is safely written. A save in a format that doesn't keep everything (a page
+    /// image, plain text) writes a copy and leaves the document unsaved, so it doesn't count:
+    /// the command is cancelled and the document stays.
     fn save_for_prompt(&mut self) -> bool {
         let saved = if self.session.path.is_none() && self.services.download.is_none() {
             self.save_as_dialog()
@@ -691,11 +692,13 @@ fn keeps_everything(name: &str) -> bool {
 }
 
 /// User commands that replace or close the document (`file.open` without a path only shows the
-/// file picker; the open that follows is checked).
+/// file picker; the open that follows is checked). Envelopes, Labels and Finish & Merge make a
+/// new document in its place; a merge written to a file (`path`) leaves it alone.
 fn discards_document(id: &str, params: &Value) -> bool {
     match id {
-        "file.new" | "file.close" => true,
+        "file.new" | "file.close" | "mailings.envelopes" | "mailings.labels" => true,
         "file.open" => params.get("path").is_some(),
+        "mailings.finish" => params.get("path").and_then(Value::as_str).is_none(),
         _ => false,
     }
 }
@@ -1100,6 +1103,172 @@ mod tests {
         control::handle(&mut a, &ctx, &req);
         assert_eq!(prompt(&a), None);
         assert!(!body_text(&a).contains(UNSAVED));
+    }
+
+    const MAILINGS: [&str; 3] = ["mailings.envelopes", "mailings.labels", "mailings.finish"];
+
+    /// Envelopes, Labels and Finish & Merge replace the document with a new one, like New, but
+    /// the ribbon ran them at once and the unsaved document was gone without a question.
+    #[test]
+    fn mailings_ask_before_replacing_unsaved_work() {
+        for id in MAILINGS {
+            let mut a = typed();
+            a.run("mailings.recipients", json!({"csv": "Name\nAda"})).unwrap();
+            let document = a.session.document_id();
+            a.run(id, json!({})).unwrap();
+            assert_eq!(prompt(&a), Some("saveChanges"), "{id}");
+            assert_eq!(a.session.document_id(), document, "{id}: untouched while the prompt is up");
+
+            a.run("ui.saveChanges", json!({"answer": "cancel"})).unwrap();
+            assert_eq!(prompt(&a), None);
+            assert_eq!(a.session.document_id(), document, "{id}: Cancel keeps the document");
+            assert!(body_text(&a).contains(UNSAVED));
+            assert!(a.session.dirty);
+
+            a.run(id, json!({})).unwrap();
+            a.run("ui.saveChanges", json!({"answer": "dontSave"})).unwrap();
+            assert_eq!(prompt(&a), None);
+            assert_ne!(a.session.document_id(), document, "{id}: Don't Save makes the new document");
+            assert_eq!(a.session.path, None);
+        }
+        // A `path` that isn't text merges into a new document, like no path at all.
+        let mut a = typed();
+        a.run("mailings.recipients", json!({"csv": "Name\nAda"})).unwrap();
+        a.run("mailings.finish", json!({"path": null})).unwrap();
+        assert_eq!(prompt(&a), Some("saveChanges"));
+    }
+
+    /// A clean document is replaced straight away, like New; a merge written to a file
+    /// (`mailings.finish` with `path`) doesn't replace anything, so it never asks.
+    #[test]
+    fn mailings_on_a_clean_document_or_into_a_file_do_not_ask() {
+        let dir = scratch("merge-to-file");
+        for id in MAILINGS {
+            let mut a = app();
+            a.run("mailings.recipients", json!({"csv": "Name\nAda"})).unwrap();
+            a.run("file.save", json!({"path": dir.join("saved.docx").to_string_lossy()})).unwrap();
+            assert!(!a.session.dirty);
+            let document = a.session.document_id();
+            a.run(id, json!({})).unwrap();
+            assert_eq!(prompt(&a), None, "{id}");
+            assert_ne!(a.session.document_id(), document, "{id}");
+        }
+        let out = dir.join("merged.docx");
+        let mut a = typed();
+        a.run("mailings.recipients", json!({"csv": "Name\nAda"})).unwrap();
+        a.run("mailings.finish", json!({"path": out.to_string_lossy()})).unwrap();
+        assert_eq!(prompt(&a), None);
+        assert!(out.exists());
+        assert!(body_text(&a).contains(UNSAVED));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The result is a new, untitled document: Save, AutoSave and the title never point at the
+    /// file the original came from, even after Save in the prompt wrote that file.
+    #[test]
+    fn mailings_results_never_save_over_the_original() {
+        for id in MAILINGS {
+            let dir = scratch(&format!("mailings-{}", id.len()));
+            let path = docx_on_disk(&dir, "Signed contract");
+            let mut a = app();
+            a.run("file.open", json!({"path": path.to_string_lossy()})).unwrap();
+            a.run("text.insert", json!({"text": "Revised "})).unwrap();
+            a.run("file.save", json!({})).unwrap();
+            assert!(a.autosaves());
+            a.run("mailings.recipients", json!({"csv": "Name\nAda"})).unwrap();
+            a.run("text.insert", json!({"text": "Again "})).unwrap();
+            a.run(id, json!({})).unwrap();
+            a.run("ui.saveChanges", json!({"answer": "save"})).unwrap();
+            assert_eq!(prompt(&a), None);
+            let saved = std::fs::read(&path).unwrap();
+            assert!(
+                wordcraft_engine::io::open_path(&path).unwrap().plain_text(wordcraft_doc::StoryRef::Body).contains("Revised Again Signed"),
+                "{id}: Save wrote the document first"
+            );
+
+            assert_eq!(a.session.path, None, "{id}");
+            assert!(!a.saved_here() && !a.autosaves(), "{id}: AutoSave doesn't cover the result");
+            assert_ne!(a.title_stem(), "contract", "{id}: titled as a new document");
+            a.run("text.insert", json!({"text": "Note "})).unwrap();
+            a.autosave_tick(now_ms() + 10_000.0);
+            a.run("file.save", json!({})).unwrap();
+            a.run("edit.undo", json!({})).unwrap();
+            a.run("edit.undo", json!({})).unwrap();
+            a.run("file.save", json!({})).unwrap();
+            a.autosave_tick(now_ms() + 20_000.0);
+            assert_eq!(std::fs::read(&path).unwrap(), saved, "{id}: the original file is never overwritten");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// Scripts and agents (control channel, MCP bridge) replace the document without a question.
+    #[test]
+    fn programmatic_mailings_never_prompt() {
+        let ctx = egui::Context::default();
+        for id in MAILINGS {
+            let mut a = typed();
+            a.execute("mailings.recipients", json!({"csv": "Name\nAda"})).unwrap();
+            let document = a.session.document_id();
+            let (req, _reply) = ControlRequest::new("engine.execute", json!({"command": id}));
+            control::handle(&mut a, &ctx, &req);
+            assert_eq!(prompt(&a), None, "{id}");
+            assert_ne!(a.session.document_id(), document, "{id}");
+            assert_eq!(a.session.path, None, "{id}");
+        }
+    }
+
+    /// Review finding: with undo kept across the swap, an agent's Undo brought document A back
+    /// under the id of the mailing result B while a prompt about B was up, and Don't Save then
+    /// threw away A. The history starts afresh instead, so the prompt only ever discards B.
+    #[test]
+    fn undo_after_a_mailing_cannot_redirect_a_pending_prompt() {
+        for id in MAILINGS {
+            let mut a = typed();
+            a.execute("mailings.recipients", json!({"csv": "Name\nAda"})).unwrap();
+            a.execute(id, json!({})).unwrap();
+            let result = body_text(&a);
+            let b = a.session.document_id();
+            assert!(a.session.dirty, "{id}: the result is unsaved");
+            a.run("file.new", json!({})).unwrap();
+            assert_eq!(prompt(&a), Some("saveChanges"), "{id}");
+
+            a.execute("edit.undo", json!({})).unwrap();
+            assert_eq!(a.session.document_id(), b, "{id}");
+            assert_eq!(body_text(&a), result, "{id}: nothing from before the mailing comes back");
+            a.run("ui.saveChanges", json!({"answer": "dontSave"})).unwrap();
+            assert_ne!(a.session.document_id(), b, "{id}: Don't Save discarded the document it asked about");
+        }
+    }
+
+    /// Review finding: with undo kept across the swap, Undo → Save As → Redo put the mailing result
+    /// under the saved file, and Save or AutoSave then wrote it there.
+    #[test]
+    fn redo_after_a_mailing_cannot_put_the_result_under_a_saved_file() {
+        for id in MAILINGS {
+            let dir = scratch(&format!("mailings-redo-{}", id.len()));
+            let path = docx_on_disk(&dir, "Signed contract");
+            let copy = dir.join("copy.docx");
+            let on_file = |p: &std::path::Path| wordcraft_engine::io::open_path(p).unwrap().plain_text(wordcraft_doc::StoryRef::Body);
+            let mut a = app();
+            a.run("file.open", json!({"path": path.to_string_lossy()})).unwrap();
+            a.run("mailings.recipients", json!({"csv": "Name\nAda"})).unwrap();
+            a.run("file.save", json!({})).unwrap();
+            a.run(id, json!({})).unwrap();
+            assert_eq!(prompt(&a), None, "{id}: the document was saved");
+            let result = body_text(&a);
+
+            a.run("edit.undo", json!({})).unwrap();
+            assert_eq!(body_text(&a), result, "{id}: history starts afresh, like New");
+            a.run("file.saveAs", json!({"path": copy.to_string_lossy()})).unwrap();
+            let written = on_file(&copy);
+            a.run("edit.redo", json!({})).unwrap();
+            assert_eq!(body_text(&a), result, "{id}: nothing to redo");
+            a.run("file.save", json!({})).unwrap();
+            a.autosave_tick(now_ms() + 10_000.0);
+            assert_eq!(on_file(&copy), written, "{id}");
+            assert!(on_file(&path).contains("Signed contract"), "{id}: the original is untouched");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     /// Surfaces finding 3: AutoSave rewrote any opened .docx ~2.5 s after the first keystroke,

@@ -166,6 +166,45 @@ fn hidden_text_adds_no_line_break_opportunity_when_not_shown() {
 }
 
 #[test]
+fn automatic_hyphenation_sees_only_the_text_laid_out() {
+    // Paragraph-text ends of the clusters after which a line may end with a hyphen.
+    let hyph_ends = |d: &Document, opts: &LayoutOptions| {
+        let l = layout(d, &mut LayoutCache::new(), opts);
+        let Some(Placed::Lines { para, .. }) = l.pages[0].items.iter().find(|i| matches!(i, Placed::Lines { .. })) else { panic!() };
+        para.hyph_after.iter().map(|k| para.clusters[*k as usize].end).collect::<Vec<_>>()
+    };
+    let doc = |text: &str| {
+        let mut d = Document::from_text(text);
+        d.settings.auto_hyphenation = true;
+        d
+    };
+    // (text, hidden bytes, deleted bytes, the text as laid out without them).
+    let cases = [
+        // A hidden prefix: "table" must not break after its first letter as "acceptable" may.
+        ("acceptable", 0..5, 0..0, "table"),
+        // A hidden separator joins two words into one.
+        ("foot ball", 4..5, 0..0, "football"),
+        // Hidden text and a tracked deletion together.
+        ("accXeptYable", 7..8, 3..4, "acceptable"),
+    ];
+    let hidden_opts = LayoutOptions { hide_deleted: true, ..Default::default() };
+    for (text, hidden, deleted, visible) in cases {
+        let mut d = doc(text);
+        d.format_range(&Pos::body(0, hidden.start), &Pos::body(0, hidden.end), &|c| c.hidden = Some(true)).unwrap();
+        if !deleted.is_empty() {
+            d.format_range(&Pos::body(0, deleted.start), &Pos::body(0, deleted.end), &|c| c.del = Some(0)).unwrap();
+        }
+        // The same points as the visible text alone, at the matching paragraph offsets.
+        let kept: Vec<usize> = (0..text.len()).filter(|i| !hidden.contains(i) && !deleted.contains(i)).collect();
+        let want: Vec<usize> = hyph_ends(&doc(visible), &hidden_opts).iter().map(|e| kept[e - 1] + 1).collect();
+        assert_eq!(hyph_ends(&d, &hidden_opts), want, "{text:?} as {visible:?}");
+        // Hidden text shown and markup shown: the whole text is hyphenated as before.
+        let all = LayoutOptions { show_hidden: true, ..Default::default() };
+        assert_eq!(hyph_ends(&d, &all), hyph_ends(&doc(text), &all), "{text:?} shown");
+    }
+}
+
+#[test]
 fn page_break_char_starts_new_page() {
     let mut d = Document::from_text("one");
     d.insert_text(&Pos::body(0, 3), "\u{000C}", &Default::default()).unwrap();

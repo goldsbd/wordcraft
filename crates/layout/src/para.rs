@@ -503,8 +503,9 @@ pub fn layout_para(p: &Paragraph, env: &ParaEnv) -> ParaLayout {
             b.shape(s, range.start + seg, &rc, None);
         }
     }
-    // Break opportunities, in the text as laid out: hidden text that is not shown and, without
-    // markup, tracked deletions are left out, so a space or soft hyphen there is no place to break.
+    // Break opportunities and hyphenation points come from the text as laid out: hidden text that is
+    // not shown and, without markup, tracked deletions are left out, so a space or soft hyphen there
+    // is no place to break, and words are hyphenated as they read.
     // The text and, for each char of it, its end there and in `p.text`.
     let (text, ends): (std::borrow::Cow<str>, Vec<(usize, usize)>) = if left.is_empty() {
         (p.text.as_str().into(), Vec::new())
@@ -516,16 +517,16 @@ pub fn layout_para(p: &Paragraph, env: &ParaEnv) -> ParaLayout {
         }
         (text.into(), ends)
     };
+    // The end of a char in `text` → the same place in `p.text`.
+    let to_para = |i: usize| -> Option<usize> {
+        if left.is_empty() { Some(i) } else { ends.binary_search_by_key(&i, |e| e.0).ok().and_then(|k| ends.get(k)).map(|e| e.1) }
+    };
     let mut opps = std::collections::HashSet::new();
     for (i, o) in unicode_linebreak::linebreaks(&text) {
-        if o == unicode_linebreak::BreakOpportunity::Allowed || i < text.len() {
-            if left.is_empty() {
-                opps.insert(i);
-            } else if let Ok(k) = ends.binary_search_by_key(&i, |e| e.0)
-                && let Some((_, end)) = ends.get(k)
-            {
-                opps.insert(*end);
-            }
+        if (o == unicode_linebreak::BreakOpportunity::Allowed || i < text.len())
+            && let Some(end) = to_para(i)
+        {
+            opps.insert(end);
         }
     }
     for c in &mut b.clusters {
@@ -581,7 +582,7 @@ pub fn layout_para(p: &Paragraph, env: &ParaEnv) -> ParaLayout {
         hyph_after: Vec::new(),
         left_out: Vec::new(),
     };
-    pl.hyph_after = hyphenation_points(p, &pl, env.doc.settings.auto_hyphenation && !pl.rp.suppress_hyphens, env);
+    pl.hyph_after = hyphenation_points(&text, to_para, &pl, env.doc.settings.auto_hyphenation && !pl.rp.suppress_hyphens);
     pl.left_out = left;
     for k in pl.hyph_after.clone() {
         if let Some(c) = pl.clusters.get_mut(k as usize) {
@@ -1044,14 +1045,14 @@ fn hyphen_glyph(pl: &ParaLayout, style: u16, cache: &mut Vec<(u16, u32, f32)>) -
 }
 
 /// Clusters after which a line may end with a hyphen: soft hyphens always, and dictionary or
-/// pattern hyphenation points of each word when automatic hyphenation is on. Never in text the
-/// layout leaves out ([`left_out`]): hidden text that is not shown, or a deletion in the final text.
-fn hyphenation_points(p: &Paragraph, pl: &ParaLayout, auto: bool, env: &ParaEnv) -> Vec<u32> {
-    let mut bytes: Vec<usize> = p.text.char_indices().filter(|(_, c)| *c == SOFT_HYPHEN).map(|(i, c)| i + c.len_utf8()).collect();
+/// pattern hyphenation points of each word when automatic hyphenation is on. Both are found in
+/// `text`, the paragraph as laid out (without what the layout leaves out, [`left_out`]), and
+/// `to_para` maps the end of a char there to the paragraph's text.
+fn hyphenation_points(text: &str, to_para: impl Fn(usize) -> Option<usize>, pl: &ParaLayout, auto: bool) -> Vec<u32> {
+    let mut bytes: Vec<usize> = text.char_indices().filter(|(_, c)| *c == SOFT_HYPHEN).map(|(i, c)| i + c.len_utf8()).collect();
     if auto {
         let lim = wordcraft_proof::hyphen::Limits::default();
         let mut start: Option<usize> = None;
-        let text = &p.text;
         for (i, c) in text.char_indices().chain(std::iter::once((text.len(), ' '))) {
             let word_char = c.is_alphabetic() || c == '\'' || c == '\u{2019}';
             match (start, word_char) {
@@ -1073,6 +1074,7 @@ fn hyphenation_points(p: &Paragraph, pl: &ParaLayout, auto: bool, env: &ParaEnv)
             }
         }
     }
+    let mut bytes: Vec<usize> = bytes.into_iter().filter_map(to_para).collect();
     if bytes.is_empty() {
         return Vec::new();
     }
@@ -1082,7 +1084,6 @@ fn hyphenation_points(p: &Paragraph, pl: &ParaLayout, auto: bool, env: &ParaEnv)
         .iter()
         .enumerate()
         .filter(|(_, c)| matches!(c.kind, ClKind::Text | ClKind::Marker) && bytes.binary_search(&c.end).is_ok())
-        .filter(|(_, c)| !pl.styles.get(c.style as usize).is_some_and(|s| left_out(&s.rc, env.show_hidden, env.hide_deleted)))
         .map(|(i, _)| i as u32)
         .collect();
     out.dedup();
